@@ -31,19 +31,23 @@ import org.wso2.carbon.identity.application.authentication.framework.config.mode
 import org.wso2.carbon.identity.application.authentication.framework.context.AuthenticationContext;
 import org.wso2.carbon.identity.application.authentication.framework.exception.AuthenticationFailedException;
 import org.wso2.carbon.identity.application.authentication.framework.model.AuthenticatedUser;
+import org.wso2.carbon.identity.application.authentication.framework.model.AuthenticatorData;
+import org.wso2.carbon.identity.application.authentication.framework.util.FrameworkConstants;
 import org.wso2.carbon.identity.application.common.model.Property;
 import org.wso2.carbon.identity.application.common.model.ServiceProvider;
 import org.wso2.carbon.identity.core.util.IdentityUtil;
 import org.wso2.carbon.identity.governance.IdentityGovernanceException;
 import org.wso2.carbon.identity.governance.IdentityGovernanceService;
 import org.wso2.carbon.identity.local.auth.authsignal.client.AuthsignalClient;
+import org.wso2.carbon.identity.local.auth.authsignal.connector.AuthsignalConnectorConfig;
 import org.wso2.carbon.identity.local.auth.authsignal.constant.AuthsignalConstants;
 import org.wso2.carbon.identity.local.auth.authsignal.internal.AuthsignalAuthenticatorDataHolder;
 import org.wso2.carbon.identity.local.auth.authsignal.model.AuthsignalConfig;
-import org.wso2.carbon.identity.local.auth.authsignal.model.TrackActionRequest;
-import org.wso2.carbon.identity.local.auth.authsignal.model.TrackActionResponse;
-import org.wso2.carbon.identity.local.auth.authsignal.model.ValidateChallengeResponse;
+import org.wso2.carbon.identity.local.auth.authsignal.model.FlowResponse;
+import org.wso2.carbon.identity.local.auth.authsignal.model.StartFlowRequest;
+import org.wso2.carbon.user.api.UserStoreException;
 
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.Map;
 
@@ -84,9 +88,8 @@ public class AuthsignalAuthenticatorTest {
     private IdentityGovernanceService governanceService;
     private TestableAuthenticator authenticator;
     private MockedStatic<IdentityUtil> identityUtil;
-    // Authsignal user ID stored on the user (claim); null when the user has none.
-    private String mappedUserId;
-    private AuthenticationFailedException mappingFailure;
+    private String savedUsername;
+    private Map<String, String> savedClaims;
 
     @BeforeMethod
     public void setUp() {
@@ -119,10 +122,7 @@ public class AuthsignalAuthenticatorTest {
         context.initializeAnalyticsData();
 
         parameters = new HashMap<>();
-        parameters.put(AuthsignalConstants.ConnectorConfig.SECRET_KEY, "secret");
-        // Avoid user store lookups in unit tests.
-        parameters.put(AuthsignalConstants.ConnectorConfig.SEND_EMAIL, "false");
-        parameters.put(AuthsignalConstants.ConnectorConfig.SEND_PHONE_NUMBER, "false");
+        parameters.put(AuthsignalConnectorConfig.SECRET_KEY, "secret");
 
         serverParameters = new HashMap<>();
         // Tenant-wise configuration is served by the identity governance service.
@@ -140,8 +140,8 @@ public class AuthsignalAuthenticatorTest {
         }
         AuthsignalAuthenticatorDataHolder.setIdentityGovernanceService(governanceService);
 
-        mappedUserId = null;
-        mappingFailure = null;
+        savedUsername = null;
+        savedClaims = null;
         authenticator = new TestableAuthenticator();
         identityUtil = mockStatic(IdentityUtil.class);
         identityUtil.when(() -> IdentityUtil.getClientIpAddress(any())).thenReturn("203.0.113.10");
@@ -158,73 +158,118 @@ public class AuthsignalAuthenticatorTest {
     public void testCanHandle() {
 
         assertFalse(authenticator.canHandle(request));
-        when(request.getParameter("token")).thenReturn("tok");
+        when(request.getParameter("challenge_token")).thenReturn("tok");
         assertTrue(authenticator.canHandle(request));
     }
 
     @Test
-    public void testChallengeRequiredRedirectsToPrebuiltUi() throws Exception {
+    public void testTags() {
+
+        assertEquals(authenticator.getTags(), new String[]{"MFA"});
+    }
+
+    @Test
+    public void testStartsSignInFlowAndRedirectsToPrebuiltUi() throws Exception {
 
         when(request.getHeader("User-Agent")).thenReturn("JUnit");
-        when(client.trackAction(eq(USER_ID), eq("signIn"), any())).thenReturn(track("CHALLENGE_REQUIRED"));
+        when(client.startFlow(any())).thenReturn(started());
 
         AuthenticatorFlowStatus status = authenticator.process(request, response, context);
 
         assertEquals(status, AuthenticatorFlowStatus.INCOMPLETE);
         verify(response).sendRedirect(CHALLENGE_URL);
-        assertEquals(context.getProperty(AuthsignalConstants.CONTEXT_PROP_IDEMPOTENCY_KEY), "idem-1");
-        assertEquals(context.getProperty(AuthsignalConstants.CONTEXT_PROP_AUTHSIGNAL_USER_ID), USER_ID);
-        assertEquals(context.getCurrentAuthenticator(), AuthsignalConstants.AUTHENTICATOR_NAME);
-
-        ArgumentCaptor<TrackActionRequest> captor = ArgumentCaptor.forClass(TrackActionRequest.class);
-        verify(client).trackAction(eq(USER_ID), eq("signIn"), captor.capture());
-        assertEquals(captor.getValue().getRedirectUrl(), CALLBACK_URL);
-        assertEquals(captor.getValue().getIpAddress(), "203.0.113.10");
-        assertEquals(captor.getValue().getUserAgent(), "JUnit");
-        assertEquals(captor.getValue().getUsername(), "alice");
+        ArgumentCaptor<StartFlowRequest> captor = ArgumentCaptor.forClass(StartFlowRequest.class);
+        verify(client).startFlow(captor.capture());
+        StartFlowRequest startRequest = captor.getValue();
+        assertEquals(startRequest.getActionCode(), "sign-in");
+        assertEquals(startRequest.getUserId(), USER_ID);
+        assertNull(startRequest.getUserEmail(), "Authsignal takes one user identifier only");
+        assertEquals(startRequest.getRedirectUrl(), CALLBACK_URL);
+        assertEquals(startRequest.getIpAddress(), "203.0.113.10");
+        assertEquals(startRequest.getUserAgent(), "JUnit");
+        assertEquals(context.getProperty(AuthsignalAuthenticator.CONTEXT_PROP_AUTHSIGNAL_USER_ID), USER_ID);
+        assertEquals(context.getProperty(AuthsignalAuthenticator.CONTEXT_PROP_FLOW_REF), "sign-in");
     }
 
     @Test
-    public void testAllowCompletesWithoutChallenge() throws Exception {
+    public void testApiBasedAuthenticationIsSupported() {
 
-        when(client.trackAction(anyString(), anyString(), any())).thenReturn(track("ALLOW"));
+        assertTrue(authenticator.isAPIBasedAuthenticationSupported());
+    }
+
+    @Test
+    public void testApiBasedFlowRedirectsBackToApplication() throws Exception {
+
+        String appRedirectUri = "myapp://oauth2/callback";
+        context.setProperty(FrameworkConstants.IS_API_BASED, "true");
+        context.setProperty(FrameworkConstants.REDIRECT_URL, appRedirectUri);
+        when(client.startFlow(any())).thenReturn(started());
+
+        AuthenticatorFlowStatus status = authenticator.process(request, response, context);
+
+        assertEquals(status, AuthenticatorFlowStatus.INCOMPLETE);
+        ArgumentCaptor<StartFlowRequest> captor = ArgumentCaptor.forClass(StartFlowRequest.class);
+        verify(client).startFlow(captor.capture());
+        assertEquals(captor.getValue().getRedirectUrl(), appRedirectUri);
+
+        AuthenticatorData data = authenticator.getAuthInitiationData(context).orElseThrow();
+        assertEquals(data.getName(), "AuthsignalAuthenticator");
+        assertEquals(data.getI18nKey(), "authenticator.authsignal");
+        assertEquals(data.getPromptType(), FrameworkConstants.AuthenticatorPromptType.REDIRECTION_PROMPT);
+        assertEquals(data.getRequiredParams(), Collections.singletonList("challenge_token"));
+        assertEquals(data.getAdditionalData().getRedirectUrl(), CHALLENGE_URL);
+    }
+
+    @Test
+    public void testApiBasedFlowWithoutRedirectUriFallsBackToCommonauth() throws Exception {
+
+        context.setProperty(FrameworkConstants.IS_API_BASED, "true");
+        when(client.startFlow(any())).thenReturn(started());
+
+        authenticator.process(request, response, context);
+
+        ArgumentCaptor<StartFlowRequest> captor = ArgumentCaptor.forClass(StartFlowRequest.class);
+        verify(client).startFlow(captor.capture());
+        assertEquals(captor.getValue().getRedirectUrl(), CALLBACK_URL);
+    }
+
+    @Test
+    public void testApiBasedCallbackCompletes() throws Exception {
+
+        // The application posts the challenge_token it received on its redirect URI as an authenticator parameter.
+        context.setProperty(FrameworkConstants.IS_API_BASED, "true");
+        context.setProperty(AuthsignalAuthenticator.CONTEXT_PROP_CHALLENGE_URL, CHALLENGE_URL);
+        flowStarted();
+        when(client.verifyFlow("sign-in", "tok")).thenReturn(verified("CHALLENGE_SUCCEEDED", USER_ID));
 
         AuthenticatorFlowStatus status = authenticator.process(request, response, context);
 
         assertEquals(status, AuthenticatorFlowStatus.SUCCESS_COMPLETED);
-        assertEquals(context.getSubject().getUserName(), "alice");
+        assertNull(context.getProperty(AuthsignalAuthenticator.CONTEXT_PROP_CHALLENGE_URL));
+    }
+
+    @Test
+    public void testConfiguredSignInFlowRef() throws Exception {
+
+        parameters.put(AuthsignalConnectorConfig.SIGN_IN_FLOW_REF, "custom-sign-in");
+        when(client.startFlow(any())).thenReturn(started());
+
+        authenticator.process(request, response, context);
+
+        ArgumentCaptor<StartFlowRequest> captor = ArgumentCaptor.forClass(StartFlowRequest.class);
+        verify(client).startFlow(captor.capture());
+        assertEquals(captor.getValue().getActionCode(), "custom-sign-in");
+    }
+
+    @Test
+    public void testStartFlowWithoutChallengeUrlFails() throws Exception {
+
+        when(client.startFlow(any())).thenReturn(new FlowResponse());
+
+        AuthenticationFailedException e = expectThrows(AuthenticationFailedException.class,
+                () -> authenticator.process(request, response, context));
+        assertEquals(e.getErrorCode(), AuthsignalConstants.ErrorMessages.ERROR_CODE_START_FLOW_FAILED.getCode());
         verify(response, never()).sendRedirect(anyString());
-    }
-
-    @Test
-    public void testBlockFails() throws Exception {
-
-        when(client.trackAction(anyString(), anyString(), any())).thenReturn(track("BLOCK"));
-
-        AuthenticationFailedException e = expectThrows(AuthenticationFailedException.class,
-                () -> authenticator.process(request, response, context));
-        assertEquals(e.getErrorCode(), AuthsignalConstants.ErrorMessages.ERROR_CODE_ACTION_BLOCKED.getCode());
-        assertNull(context.getSubject());
-    }
-
-    @Test
-    public void testReviewRequiredFailsByDefault() throws Exception {
-
-        when(client.trackAction(anyString(), anyString(), any())).thenReturn(track("REVIEW_REQUIRED"));
-
-        AuthenticationFailedException e = expectThrows(AuthenticationFailedException.class,
-                () -> authenticator.process(request, response, context));
-        assertEquals(e.getErrorCode(),
-                AuthsignalConstants.ErrorMessages.ERROR_CODE_ACTION_REVIEW_REQUIRED.getCode());
-    }
-
-    @Test
-    public void testReviewRequiredAllowedWhenConfigured() throws Exception {
-
-        parameters.put(AuthsignalConstants.ConnectorConfig.ALLOW_ON_REVIEW_REQUIRED, "true");
-        when(client.trackAction(anyString(), anyString(), any())).thenReturn(track("REVIEW_REQUIRED"));
-
-        assertEquals(authenticator.process(request, response, context), AuthenticatorFlowStatus.SUCCESS_COMPLETED);
     }
 
     @Test
@@ -241,7 +286,7 @@ public class AuthsignalAuthenticatorTest {
     @Test
     public void testMissingSecretFails() {
 
-        parameters.remove(AuthsignalConstants.ConnectorConfig.SECRET_KEY);
+        parameters.remove(AuthsignalConnectorConfig.SECRET_KEY);
 
         AuthenticationFailedException e = expectThrows(AuthenticationFailedException.class,
                 () -> authenticator.process(request, response, context));
@@ -253,7 +298,7 @@ public class AuthsignalAuthenticatorTest {
     public void testUsernameIdentifier() throws Exception {
 
         AuthsignalConfig config = new AuthsignalConfig(Map.of(
-                AuthsignalConstants.ConnectorConfig.USER_IDENTIFIER, "username"));
+                AuthsignalConnectorConfig.USER_IDENTIFIER, "username"));
         assertEquals(authenticator.resolveAuthsignalUserId(user, config), "alice");
 
         user.setUserStoreDomain("LDAP");
@@ -262,49 +307,86 @@ public class AuthsignalAuthenticatorTest {
     }
 
     @Test
-    public void testMappedUserIdTakesPrecedence() throws Exception {
+    public void testCallbackWithSuccessfulFlow() throws Exception {
 
-        mappedUserId = "as-generated-at-signup";
-        AuthsignalConfig config = new AuthsignalConfig(Map.of(
-                AuthsignalConstants.ConnectorConfig.USER_IDENTIFIER, "username"));
-        assertEquals(authenticator.resolveAuthsignalUserId(user, config), "as-generated-at-signup");
-        assertEquals(authenticator.resolveAuthsignalUserId(user, new AuthsignalConfig(null)),
-                "as-generated-at-signup");
-    }
-
-    @Test
-    public void testMappingReadFailureFailsClosed() throws Exception {
-
-        mappingFailure = new AuthenticationFailedException(
-                AuthsignalConstants.ErrorMessages.ERROR_CODE_READING_USER_ID_MAPPING.getCode(), "boom");
-
-        AuthenticationFailedException e = expectThrows(AuthenticationFailedException.class,
-                () -> authenticator.process(request, response, context));
-        assertEquals(e.getErrorCode(), "AUTHSIGNAL-60017");
-        verify(client, never()).trackAction(anyString(), anyString(), any());
-    }
-
-    @Test
-    public void testCallbackWithSuccessfulChallenge() throws Exception {
-
-        challengeInitiated();
-        when(client.validateChallenge("tok", USER_ID, "signIn"))
-                .thenReturn(validate(true, "CHALLENGE_SUCCEEDED", USER_ID, "idem-1"));
+        flowStarted();
+        when(client.verifyFlow("sign-in", "tok")).thenReturn(verified("CHALLENGE_SUCCEEDED", USER_ID));
 
         AuthenticatorFlowStatus status = authenticator.process(request, response, context);
 
         assertEquals(status, AuthenticatorFlowStatus.SUCCESS_COMPLETED);
         assertNotNull(context.getSubject());
-        assertEquals(context.getSubject().getUserName(), "alice");
-        assertNull(context.getProperty(AuthsignalConstants.CONTEXT_PROP_IDEMPOTENCY_KEY));
+        assertNull(context.getProperty(AuthsignalAuthenticator.CONTEXT_PROP_FLOW_REF), "Flow must be consumed");
+        verify(client, never()).startFlow(any());
+        assertEquals(savedUsername, "alice");
+        assertEquals(savedClaims, Collections.singletonMap(AuthsignalConstants.PASSKEY_ENROLLED_CLAIM, "false"));
     }
 
     @Test
-    public void testCallbackWithFailedChallenge() throws Exception {
+    public void testCallbackSavesPasskeyEnrolledWhenUserHasPasskey() throws Exception {
 
-        challengeInitiated();
-        when(client.validateChallenge(anyString(), anyString(), anyString()))
-                .thenReturn(validate(false, "CHALLENGE_FAILED", USER_ID, "idem-1"));
+        flowStarted();
+        FlowResponse result = verified("CHALLENGE_SUCCEEDED", USER_ID);
+        FlowResponse.Authenticator passkey = new FlowResponse.Authenticator();
+        passkey.setVerificationMethod("PASSKEY");
+        result.getUser().setAuthenticators(Collections.singletonList(passkey));
+        when(client.verifyFlow("sign-in", "tok")).thenReturn(result);
+
+        assertEquals(authenticator.process(request, response, context), AuthenticatorFlowStatus.SUCCESS_COMPLETED);
+        assertEquals(savedClaims, Collections.singletonMap(AuthsignalConstants.PASSKEY_ENROLLED_CLAIM, "true"));
+    }
+
+    @Test
+    public void testCallbackSavesPasskeyEnrolledWhenPasskeyEnrolledInFlow() throws Exception {
+
+        flowStarted();
+        FlowResponse result = verified("CHALLENGE_SUCCEEDED", USER_ID);
+        FlowResponse.Step step = new FlowResponse.Step();
+        step.setStepType("ENROLLMENT_REQUIRED");
+        step.setVerificationMethod("PASSKEY");
+        result.getAction().setCompletedSteps(Collections.singletonList(step));
+        when(client.verifyFlow("sign-in", "tok")).thenReturn(result);
+
+        assertEquals(authenticator.process(request, response, context), AuthenticatorFlowStatus.SUCCESS_COMPLETED);
+        assertEquals(savedClaims, Collections.singletonMap(AuthsignalConstants.PASSKEY_ENROLLED_CLAIM, "true"));
+    }
+
+    @Test
+    public void testPasskeyEnrolledIsNotSavedForFederatedUser() throws Exception {
+
+        user.setFederatedUser(true);
+        context.setProperty(AuthsignalAuthenticator.CONTEXT_PROP_FLOW_REF, "sign-in");
+        context.setProperty(AuthsignalAuthenticator.CONTEXT_PROP_AUTHSIGNAL_USER_ID, "alice");
+        when(request.getParameter("challenge_token")).thenReturn("tok");
+        when(client.verifyFlow("sign-in", "tok")).thenReturn(verified("CHALLENGE_SUCCEEDED", "alice"));
+
+        assertEquals(authenticator.process(request, response, context), AuthenticatorFlowStatus.SUCCESS_COMPLETED);
+        assertNull(savedClaims);
+    }
+
+    @Test
+    public void testFailureToSavePasskeyEnrolledDoesNotFailLogin() throws Exception {
+
+        authenticator = new TestableAuthenticator() {
+            @Override
+            protected void setUserClaims(String tenantDomain, String domainQualifiedUsername,
+                                         Map<String, String> claims) throws UserStoreException {
+
+                throw new UserStoreException("Claim not found");
+            }
+        };
+        flowStarted();
+        when(client.verifyFlow("sign-in", "tok")).thenReturn(verified("CHALLENGE_SUCCEEDED", USER_ID));
+
+        assertEquals(authenticator.process(request, response, context), AuthenticatorFlowStatus.SUCCESS_COMPLETED);
+        assertNotNull(context.getSubject());
+    }
+
+    @Test
+    public void testCallbackWithFailedFlow() throws Exception {
+
+        flowStarted();
+        when(client.verifyFlow("sign-in", "tok")).thenReturn(verified("CHALLENGE_FAILED", USER_ID));
 
         AuthenticationFailedException e = expectThrows(AuthenticationFailedException.class,
                 () -> authenticator.process(request, response, context));
@@ -313,11 +395,10 @@ public class AuthsignalAuthenticatorTest {
     }
 
     @Test
-    public void testCallbackWithTokenFromAnotherAction() throws Exception {
+    public void testCallbackWithTokenOfAnotherUser() throws Exception {
 
-        challengeInitiated();
-        when(client.validateChallenge(anyString(), anyString(), anyString()))
-                .thenReturn(validate(true, "CHALLENGE_SUCCEEDED", USER_ID, "idem-other"));
+        flowStarted();
+        when(client.verifyFlow("sign-in", "tok")).thenReturn(verified("CHALLENGE_SUCCEEDED", "someone-else"));
 
         AuthenticationFailedException e = expectThrows(AuthenticationFailedException.class,
                 () -> authenticator.process(request, response, context));
@@ -325,14 +406,15 @@ public class AuthsignalAuthenticatorTest {
     }
 
     @Test
-    public void testTokenWithoutInitiatedChallengeStartsNewTrack() throws Exception {
+    public void testTokenWithoutStartedFlowStartsNewFlow() throws Exception {
 
-        // A token on a request this flow did not challenge must never be validated.
-        when(request.getParameter("token")).thenReturn("tok");
-        when(client.trackAction(anyString(), anyString(), any())).thenReturn(track("CHALLENGE_REQUIRED"));
+        when(request.getParameter("challenge_token")).thenReturn("tok");
+        when(client.startFlow(any())).thenReturn(started());
 
-        assertEquals(authenticator.process(request, response, context), AuthenticatorFlowStatus.INCOMPLETE);
-        verify(client, never()).validateChallenge(anyString(), any(), any());
+        AuthenticatorFlowStatus status = authenticator.process(request, response, context);
+
+        assertEquals(status, AuthenticatorFlowStatus.INCOMPLETE);
+        verify(client, never()).verifyFlow(anyString(), anyString());
     }
 
     @Test
@@ -341,10 +423,10 @@ public class AuthsignalAuthenticatorTest {
         context.setTenantDomain("acme.com");
         user.setTenantDomain("acme.com");
         Property secret = new Property();
-        secret.setName(AuthsignalConstants.ConnectorConfig.SECRET_KEY);
+        secret.setName(AuthsignalConnectorConfig.SECRET_KEY);
         secret.setValue("acme-secret");
         Property region = new Property();
-        region.setName(AuthsignalConstants.ConnectorConfig.REGION);
+        region.setName(AuthsignalConnectorConfig.REGION);
         region.setValue("EU");
         when(governanceService.getConfiguration(any(String[].class), eq("acme.com")))
                 .thenReturn(new Property[]{secret, region});
@@ -353,14 +435,16 @@ public class AuthsignalAuthenticatorTest {
 
         assertEquals(config.getSecretKey(), "acme-secret");
         assertEquals(config.getApiBaseUrl(), "https://eu.api.authsignal.com/v1");
-        assertEquals(config.getActionCode(), "signIn");
+        assertEquals(config.getSignInFlowRef(), "sign-in");
+        assertEquals(config.getRegistrationFlowRef(), "sign-up");
+        assertEquals(config.getRecoveryFlowRef(), "password-reset");
     }
 
     @Test
     public void testDeploymentTomlParametersAreIgnored() throws Exception {
 
         // Configuration is tenant-wise only; authenticator parameters in deployment.toml must have no effect.
-        parameters.put(AuthsignalConstants.ConnectorConfig.REGION, "au");
+        parameters.put(AuthsignalConnectorConfig.REGION, "au");
         serverParameters.put("ApiBaseUrl", "https://auth.example.com/v1");
         serverParameters.put("RequestTimeoutMillis", "1");
 
@@ -373,7 +457,7 @@ public class AuthsignalAuthenticatorTest {
     public void testUnsupportedRegionFails() {
 
         // Tenants cannot supply a URL; an unknown region must not fall back to an arbitrary host.
-        parameters.put(AuthsignalConstants.ConnectorConfig.REGION, "https://internal.example");
+        parameters.put(AuthsignalConnectorConfig.REGION, "https://internal.example");
 
         AuthenticationFailedException e = expectThrows(AuthenticationFailedException.class,
                 () -> authenticator.process(request, response, context));
@@ -391,33 +475,32 @@ public class AuthsignalAuthenticatorTest {
         assertEquals(e.getErrorCode(), AuthsignalConstants.ErrorMessages.ERROR_CODE_READING_CONFIG.getCode());
     }
 
-    private void challengeInitiated() {
+    private void flowStarted() {
 
-        context.setProperty(AuthsignalConstants.CONTEXT_PROP_IDEMPOTENCY_KEY, "idem-1");
-        context.setProperty(AuthsignalConstants.CONTEXT_PROP_AUTHSIGNAL_USER_ID, USER_ID);
-        when(request.getParameter("token")).thenReturn("tok");
+        context.setProperty(AuthsignalAuthenticator.CONTEXT_PROP_FLOW_REF, "sign-in");
+        context.setProperty(AuthsignalAuthenticator.CONTEXT_PROP_AUTHSIGNAL_USER_ID, USER_ID);
+        when(request.getParameter("challenge_token")).thenReturn("tok");
     }
 
-    private static TrackActionResponse track(String state) {
+    private static FlowResponse started() {
 
-        TrackActionResponse trackResponse = new TrackActionResponse();
-        trackResponse.setState(state);
-        trackResponse.setIdempotencyKey("idem-1");
-        if ("CHALLENGE_REQUIRED".equals(state)) {
-            trackResponse.setUrl(CHALLENGE_URL);
-        }
-        return trackResponse;
+        FlowResponse startResponse = new FlowResponse();
+        startResponse.setChallengeUrl(CHALLENGE_URL);
+        startResponse.setChallengeId("challenge-1");
+        startResponse.setChallengeToken("start-token");
+        return startResponse;
     }
 
-    private static ValidateChallengeResponse validate(boolean valid, String state, String userId,
-                                                      String idempotencyKey) {
+    private static FlowResponse verified(String state, String userId) {
 
-        ValidateChallengeResponse validateResponse = new ValidateChallengeResponse();
-        validateResponse.setIsValid(valid);
-        validateResponse.setState(state);
-        validateResponse.setUserId(userId);
-        validateResponse.setIdempotencyKey(idempotencyKey);
-        return validateResponse;
+        FlowResponse.Action action = new FlowResponse.Action();
+        action.setState(state);
+        FlowResponse.User flowUser = new FlowResponse.User();
+        flowUser.setUserId(userId);
+        FlowResponse verifyResponse = new FlowResponse();
+        verifyResponse.setAction(action);
+        verifyResponse.setUser(flowUser);
+        return verifyResponse;
     }
 
     /**
@@ -441,16 +524,6 @@ public class AuthsignalAuthenticatorTest {
         }
 
         @Override
-        protected String getMappedAuthsignalUserId(AuthenticatedUser user) throws AuthenticationFailedException {
-
-            // The claim lookup requires the user store.
-            if (mappingFailure != null) {
-                throw mappingFailure;
-            }
-            return mappedUserId;
-        }
-
-        @Override
         protected AuthenticatorConfig getAuthenticatorConfig() {
 
             AuthenticatorConfig config = new AuthenticatorConfig();
@@ -464,6 +537,17 @@ public class AuthsignalAuthenticatorTest {
                                                         boolean success) {
 
             // Event publishing requires the OSGi runtime.
+        }
+
+        @Override
+        protected void setUserClaims(String tenantDomain, String domainQualifiedUsername,
+                                     Map<String, String> claims) throws UserStoreException {
+
+            savedUsername = domainQualifiedUsername;
+            savedClaims = claims;
+            // Like the SCIM user operation listener, which adds the last modified time to the claims.
+            claims.put("probe", "probe");
+            claims.remove("probe");
         }
     }
 }

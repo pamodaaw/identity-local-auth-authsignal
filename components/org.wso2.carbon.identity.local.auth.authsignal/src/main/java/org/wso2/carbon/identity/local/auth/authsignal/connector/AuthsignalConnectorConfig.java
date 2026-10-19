@@ -20,7 +20,6 @@ package org.wso2.carbon.identity.local.auth.authsignal.connector;
 
 import org.wso2.carbon.identity.governance.IdentityGovernanceException;
 import org.wso2.carbon.identity.governance.common.IdentityConnectorConfig;
-import org.wso2.carbon.identity.local.auth.authsignal.constant.AuthsignalConstants.ConnectorConfig;
 import org.wso2.carbon.identity.local.auth.authsignal.constant.AuthsignalConstants.Defaults;
 
 import java.util.Collections;
@@ -34,50 +33,69 @@ import java.util.Properties;
  */
 public class AuthsignalConnectorConfig implements IdentityConnectorConfig {
 
+    public static final String CONNECTOR_NAME = "authsignal-authenticator";
+    public static final String CONNECTOR_FRIENDLY_NAME = "Authsignal";
+    public static final String CONNECTOR_CATEGORY = "Multi Factor Authenticators";
+    public static final String CONNECTOR_SUB_CATEGORY = "DEFAULT";
+    public static final int CONNECTOR_ORDER = 0;
+
+    // The __secret__ prefix renders the field as a password input; the property is also marked confidential so
+    // the governance REST API masks it in responses.
+    public static final String SECRET_KEY = "__secret__.Authsignal.SecretKey";
+    public static final String REGION = "Authsignal.Region";
+    public static final String USER_IDENTIFIER = "Authsignal.UserIdentifier";
+    // Action codes of the Authsignal flows used in each journey.
+    public static final String SIGN_IN_FLOW_REF = "Authsignal.SignInFlowRef";
+    public static final String REGISTRATION_FLOW_REF = "Authsignal.RegistrationFlowRef";
+    public static final String RECOVERY_FLOW_REF = "Authsignal.RecoveryFlowRef";
+    public static final String SYNC_CONTACT_DETAILS = "Authsignal.SyncContactDetails";
+    public static final String DELETE_USERS = "Authsignal.DeleteUsers";
+
+    public static final String[] PROPERTY_NAMES = {SECRET_KEY, REGION, USER_IDENTIFIER, SIGN_IN_FLOW_REF,
+            REGISTRATION_FLOW_REF, RECOVERY_FLOW_REF, SYNC_CONTACT_DETAILS, DELETE_USERS};
+
     @Override
     public String getName() {
 
-        return ConnectorConfig.CONNECTOR_NAME;
+        return CONNECTOR_NAME;
     }
 
     @Override
     public String getFriendlyName() {
 
-        return ConnectorConfig.CONNECTOR_FRIENDLY_NAME;
+        return CONNECTOR_FRIENDLY_NAME;
     }
 
     @Override
     public String getCategory() {
 
-        return ConnectorConfig.CONNECTOR_CATEGORY;
+        return CONNECTOR_CATEGORY;
     }
 
     @Override
     public String getSubCategory() {
 
-        return ConnectorConfig.CONNECTOR_SUB_CATEGORY;
+        return CONNECTOR_SUB_CATEGORY;
     }
 
     @Override
     public int getOrder() {
 
-        return ConnectorConfig.CONNECTOR_ORDER;
+        return CONNECTOR_ORDER;
     }
 
     @Override
     public Map<String, String> getPropertyNameMapping() {
 
         Map<String, String> nameMapping = new HashMap<>();
-        nameMapping.put(ConnectorConfig.SECRET_KEY, "Secret key");
-        nameMapping.put(ConnectorConfig.REGION, "Region");
-        nameMapping.put(ConnectorConfig.ACTION_CODE, "Action code");
-        nameMapping.put(ConnectorConfig.USER_IDENTIFIER, "User identifier");
-        nameMapping.put(ConnectorConfig.SEND_EMAIL, "Send email address");
-        nameMapping.put(ConnectorConfig.SEND_PHONE_NUMBER, "Send mobile number");
-        nameMapping.put(ConnectorConfig.REDIRECT_TO_SETTINGS, "Redirect to authenticator settings");
-        nameMapping.put(ConnectorConfig.ALLOW_ON_REVIEW_REQUIRED, "Allow sign-in on review required");
-        nameMapping.put(ConnectorConfig.REGISTRATION_ACTION_CODE, "Registration action code");
-        nameMapping.put(ConnectorConfig.RECOVERY_ACTION_CODE, "Password recovery action code");
+        nameMapping.put(SECRET_KEY, "Secret key");
+        nameMapping.put(REGION, "Region");
+        nameMapping.put(USER_IDENTIFIER, "User identifier");
+        nameMapping.put(SIGN_IN_FLOW_REF, "Sign-in flow");
+        nameMapping.put(REGISTRATION_FLOW_REF, "Registration flow");
+        nameMapping.put(RECOVERY_FLOW_REF, "Password recovery flow");
+        nameMapping.put(SYNC_CONTACT_DETAILS, "Sync contact detail changes");
+        nameMapping.put(DELETE_USERS, "Delete users on Authsignal");
         return nameMapping;
     }
 
@@ -85,49 +103,43 @@ public class AuthsignalConnectorConfig implements IdentityConnectorConfig {
     public Map<String, String> getPropertyDescriptionMapping() {
 
         Map<String, String> descriptionMapping = new HashMap<>();
-        descriptionMapping.put(ConnectorConfig.SECRET_KEY,
+        descriptionMapping.put(SECRET_KEY,
                 "Server API secret key of the Authsignal tenant");
-        descriptionMapping.put(ConnectorConfig.REGION,
+        descriptionMapping.put(REGION,
                 "Region of the Authsignal tenant: us, eu, au, ca or uk");
-        descriptionMapping.put(ConnectorConfig.ACTION_CODE,
-                "Action code tracked on Authsignal. Rules are configured per action in the Authsignal Portal");
-        descriptionMapping.put(ConnectorConfig.USER_IDENTIFIER,
+        descriptionMapping.put(USER_IDENTIFIER,
                 "Value used as the Authsignal user ID: userId (WSO2 user UUID) or username");
-        descriptionMapping.put(ConnectorConfig.SEND_EMAIL,
-                "Send the user's email address to Authsignal to enable email based verification");
-        descriptionMapping.put(ConnectorConfig.SEND_PHONE_NUMBER,
-                "Send the user's mobile number (E.164) to Authsignal to enable SMS based verification");
-        descriptionMapping.put(ConnectorConfig.REDIRECT_TO_SETTINGS,
-                "Show the user's Authsignal authenticator settings after the challenge");
-        descriptionMapping.put(ConnectorConfig.ALLOW_ON_REVIEW_REQUIRED,
-                "Continue the sign-in when Authsignal returns REVIEW_REQUIRED instead of failing it");
-        descriptionMapping.put(ConnectorConfig.REGISTRATION_ACTION_CODE,
-                "Action code tracked when Authsignal is used in a registration flow");
-        descriptionMapping.put(ConnectorConfig.RECOVERY_ACTION_CODE,
-                "Action code tracked when Authsignal is used in a password recovery flow");
+        descriptionMapping.put(SIGN_IN_FLOW_REF,
+                "Action code of the Authsignal flow used at sign-in");
+        descriptionMapping.put(REGISTRATION_FLOW_REF,
+                "Action code of the Authsignal flow used in registration flows");
+        descriptionMapping.put(RECOVERY_FLOW_REF,
+                "Action code of the Authsignal flow used in password recovery flows");
+        descriptionMapping.put(SYNC_CONTACT_DETAILS,
+                "Update the user's verified email address and mobile number on Authsignal when they change");
+        descriptionMapping.put(DELETE_USERS,
+                "Delete the user and their authenticators on Authsignal when the user is deleted");
         return descriptionMapping;
     }
 
     @Override
     public String[] getPropertyNames() {
 
-        return ConnectorConfig.PROPERTY_NAMES.clone();
+        return PROPERTY_NAMES.clone();
     }
 
     @Override
     public Properties getDefaultPropertyValues(String tenantDomain) throws IdentityGovernanceException {
 
         Properties properties = new Properties();
-        properties.put(ConnectorConfig.SECRET_KEY, "");
-        properties.put(ConnectorConfig.REGION, Defaults.REGION);
-        properties.put(ConnectorConfig.ACTION_CODE, Defaults.ACTION_CODE);
-        properties.put(ConnectorConfig.USER_IDENTIFIER, Defaults.USER_IDENTIFIER);
-        properties.put(ConnectorConfig.SEND_EMAIL, String.valueOf(Defaults.SEND_EMAIL));
-        properties.put(ConnectorConfig.SEND_PHONE_NUMBER, String.valueOf(Defaults.SEND_PHONE_NUMBER));
-        properties.put(ConnectorConfig.REDIRECT_TO_SETTINGS, String.valueOf(Defaults.REDIRECT_TO_SETTINGS));
-        properties.put(ConnectorConfig.ALLOW_ON_REVIEW_REQUIRED, String.valueOf(Defaults.ALLOW_ON_REVIEW_REQUIRED));
-        properties.put(ConnectorConfig.REGISTRATION_ACTION_CODE, Defaults.REGISTRATION_ACTION_CODE);
-        properties.put(ConnectorConfig.RECOVERY_ACTION_CODE, Defaults.RECOVERY_ACTION_CODE);
+        properties.put(SECRET_KEY, "");
+        properties.put(REGION, Defaults.REGION);
+        properties.put(USER_IDENTIFIER, Defaults.USER_IDENTIFIER);
+        properties.put(SIGN_IN_FLOW_REF, Defaults.SIGN_IN_FLOW_REF);
+        properties.put(REGISTRATION_FLOW_REF, Defaults.REGISTRATION_FLOW_REF);
+        properties.put(RECOVERY_FLOW_REF, Defaults.RECOVERY_FLOW_REF);
+        properties.put(SYNC_CONTACT_DETAILS, String.valueOf(Defaults.SYNC_CONTACT_DETAILS));
+        properties.put(DELETE_USERS, String.valueOf(Defaults.DELETE_USERS));
         return properties;
     }
 
@@ -141,6 +153,6 @@ public class AuthsignalConnectorConfig implements IdentityConnectorConfig {
     @Override
     public List<String> getConfidentialPropertyValues(String tenantDomain) {
 
-        return Collections.singletonList(ConnectorConfig.SECRET_KEY);
+        return Collections.singletonList(SECRET_KEY);
     }
 }

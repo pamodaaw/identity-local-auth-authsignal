@@ -19,7 +19,7 @@ package org.wso2.carbon.identity.local.auth.authsignal.util;
 
 import org.wso2.carbon.identity.application.common.model.Property;
 import org.wso2.carbon.identity.governance.IdentityGovernanceException;
-import org.wso2.carbon.identity.local.auth.authsignal.constant.AuthsignalConstants.ConnectorConfig;
+import org.wso2.carbon.identity.local.auth.authsignal.connector.AuthsignalConnectorConfig;
 import org.wso2.carbon.identity.local.auth.authsignal.internal.AuthsignalAuthenticatorDataHolder;
 import org.wso2.carbon.identity.local.auth.authsignal.model.AuthsignalConfig;
 
@@ -48,7 +48,7 @@ public final class AuthsignalConfigResolver {
 
         Map<String, String> tenantProperties = new HashMap<>();
         Property[] properties = AuthsignalAuthenticatorDataHolder.getIdentityGovernanceService()
-                .getConfiguration(ConnectorConfig.PROPERTY_NAMES, tenantDomain);
+                .getConfiguration(AuthsignalConnectorConfig.PROPERTY_NAMES, tenantDomain);
         if (properties != null) {
             for (Property property : properties) {
                 if (property != null && property.getName() != null) {

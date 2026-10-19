@@ -1,10 +1,20 @@
 # Authsignal Authenticator for WSO2 Identity Server
 
-A custom **local authenticator** that adds [Authsignal](https://www.authsignal.com) adaptive MFA to a self-hosted
-WSO2 Identity Server login flow. It is the on-prem equivalent of Authsignal's
-[WSO2 Identity Platform integration](https://docs.authsignal.com/integrations/wso2-identity-platform): after the user
-is identified, Authsignal decides whether to allow, block, or challenge the sign-in, and challenges run in Authsignal's
-[pre-built UI](https://docs.authsignal.com/implementation-options/prebuilt-ui/overview).
+A custom **local authenticator** that adds [Authsignal](https://www.authsignal.com) MFA to a self-hosted WSO2 Identity
+Server login flow, plus a flow executor for registration and password recovery. Every journey uses
+[Authsignal Flows](https://docs.authsignal.com/api-reference/server-api/start-flow): the connector starts the flow
+configured for the journey in the Authsignal Portal, the user completes it in Authsignal's
+[pre-built UI](https://docs.authsignal.com/implementation-options/prebuilt-ui/overview), and the connector verifies the
+result server side.
+
+| Journey | Flow (default action code) | User at start |
+|---|---|---|
+| Sign-in | `sign-in` | Authsignal user ID of the WSO2 user |
+| Registration | `sign-up` | Email address (or mobile number) entered by the user; no user ID yet |
+| Invited-user registration | `sign-up` | Authsignal user ID of the WSO2 user |
+| Password recovery | `password-reset` | Authsignal user ID of the WSO2 user |
+
+Email and phone update journeys are handled in a separate effort.
 
 ## How it works
 
@@ -12,26 +22,24 @@ is identified, Authsignal decides whether to allow, block, or challenge the sign
 Step 1 (e.g. Username & Password) identifies the user
         │
         ▼
-AuthsignalAuthenticator ── POST /v1/users/{userId}/actions/{actionCode} ──▶ Authsignal rules engine
+AuthsignalAuthenticator ── POST /v1/flows {actionCode, user: {userId}, redirectUrl} ──▶ Authsignal
         │                    redirectUrl = https://<is>/commonauth?sessionDataKey=<ctx>
         │
-        ├─ ALLOW              → step completes, no prompt
-        ├─ BLOCK              → login fails (AUTHSIGNAL-60007)
-        ├─ REVIEW_REQUIRED    → login fails (AUTHSIGNAL-60008), unless AllowOnReviewRequired = true
-        └─ CHALLENGE_REQUIRED → 302 to Authsignal pre-built UI (passkey, TOTP, SMS, email OTP, …)
+        └─ 302 to challengeUrl (Authsignal pre-built UI: passkey, TOTP, SMS, email OTP, …)
                                        │
                                        ▼
-                     302 back to /commonauth?sessionDataKey=<ctx>&token=<jwt>
+                     302 back to /commonauth?sessionDataKey=<ctx>&challenge_token=<token>
                                        │
-AuthsignalAuthenticator ── POST /v1/validate {token, userId, action} ──▶ Authsignal
+AuthsignalAuthenticator ── POST /v1/flows/verify {actionCode, challengeToken} ──▶ Authsignal
         │
-        └─ step completes only if isValid, state = CHALLENGE_SUCCEEDED, and the userId and
-           idempotencyKey match the action tracked in this authentication context
+        └─ step completes only if action.state = CHALLENGE_SUCCEEDED and user.userId matches the user
+           the flow was started for
 ```
 
-The secret key never leaves the server. Matching the `idempotencyKey` binds the returned token to the action this
-login tracked. A token from another session or action is rejected (AUTHSIGNAL-60011). A `token` parameter is ignored
-unless this flow started a challenge.
+The secret key never leaves the server. Matching `user.userId` binds the returned token to the user of this login. A
+token for another user is rejected (ASIG-60008). A `challenge_token` parameter is ignored unless this login started a
+flow. The rules and steps of each journey (whether to challenge, which methods to offer) are configured on the flow in
+the Authsignal Portal.
 
 ## Build
 
@@ -46,10 +54,17 @@ The OSGi bundle is created at
 
 ## Deploy
 
-1. Copy the JAR to `<IS_HOME>/repository/components/dropins/` and restart the server. Nothing needs to be added to
-   `deployment.toml`: all configuration is tenant-wise.
-2. Configure Authsignal for each tenant (see below).
-3. In the Console, open the application > **Login Flow**. Add **Authsignal** as the **second** step, after a step that
+1. Copy the JAR to `<IS_HOME>/repository/components/dropins/`.
+2. Enable the authenticator by adding the following to `<IS_HOME>/repository/conf/deployment.toml`, then restart the
+   server. Without it the authenticator is registered as disabled and is not listed in the Console. No parameters are
+   needed: all other configuration is tenant-wise.
+
+   ```toml
+   [[authentication.custom_authenticator]]
+   name = "AuthsignalAuthenticator"
+   ```
+3. Configure Authsignal for each tenant (see below).
+4. In the Console, open the application > **Login Flow**. Add **Authsignal** as the **second** step, after a step that
    identifies the user (Username & Password, Identifier First, or a federated IdP).
 
 ## Configuration (tenant-wise)
@@ -81,17 +96,41 @@ masks it in responses. Only send the properties you want to change; the others k
 | Property | Default | Description |
 |---|---|---|
 | `__secret__.Authsignal.SecretKey` | – (required) | Authsignal Server API key (Authsignal Portal > Settings > API keys). |
-| `Authsignal.Region` | `us` | Region of the Authsignal tenant: `us`, `eu`, `au`, `ca` or `uk`. Match it to the API Host shown in the Authsignal Portal. Tenants pick a region rather than a URL, so the server only calls Authsignal's own hosts. |
-| `Authsignal.ActionCode` | `signIn` | Action tracked on Authsignal at sign-in. Configure rules for it in the Authsignal Portal. |
+| `Authsignal.Region` | `us` | Region of the Authsignal tenant: `us`, `eu`, `au`, `ca` or `uk`, which selects the API base URL (`https://api.authsignal.com/v1` or `https://<region>.api.authsignal.com/v1`). Match it to the API Host shown in the Authsignal Portal. Tenants pick a region rather than a URL, so the server only calls Authsignal's own hosts. |
 | `Authsignal.UserIdentifier` | `userId` | Which value becomes the Authsignal user ID. `userId` is the WSO2 user UUID, which stays stable across renames. `username` is `[DOMAIN/]username[@tenant]`, where the primary domain and `carbon.super` are omitted. Federated users always use their subject identifier. |
-| `Authsignal.SendEmail` / `Authsignal.SendPhoneNumber` | `true` | Send the `emailaddress` and E.164 `mobile` claims so Authsignal can offer email / SMS methods. |
-| `Authsignal.RedirectToSettings` | `false` | Show Authsignal authenticator settings after the challenge. |
-| `Authsignal.AllowOnReviewRequired` | `false` | Treat `REVIEW_REQUIRED` as allow instead of failing the login. |
-| `Authsignal.RegistrationActionCode` | `signUp` | Action tracked when Authsignal runs in a registration or invited-user registration flow. |
-| `Authsignal.RecoveryActionCode` | `passwordRecovery` | Action tracked when Authsignal runs in a password recovery flow. |
+| `Authsignal.SignInFlowRef` | `sign-in` | Action code of the Authsignal flow used at sign-in. |
+| `Authsignal.RegistrationFlowRef` | `sign-up` | Action code of the Authsignal flow used in registration and invited-user registration flows. |
+| `Authsignal.RecoveryFlowRef` | `password-reset` | Action code of the Authsignal flow used in password recovery flows. |
+| `Authsignal.SyncContactDetails` | `false` | Enrol the user's email address and mobile number on Authsignal when they change and are verified in WSO2. See [Contact detail sync](#contact-detail-sync). |
+| `Authsignal.DeleteUsers` | `true` | Delete the user and their authenticators on Authsignal when the user is deleted in WSO2. See [User deletion](#user-deletion). |
 
 Each Authsignal API call has a fixed 10 second timeout. It is not configurable, so that one tenant cannot hold server
 threads for long periods.
+
+### App-native (API-based) authentication
+
+The sign-in authenticator supports [app-native authentication](https://is.docs.wso2.com/en/latest/references/app-native-authentication/)
+as a redirection prompt:
+
+1. When the Authsignal step is reached, the `/oauth2/authn` response lists `AuthsignalAuthenticator` with
+   `promptType: REDIRECTION_PROMPT`, `requiredParams: ["challenge_token"]` and the pre-built UI URL in
+   `metadata.additionalData.redirectUrl`.
+2. The application opens that URL in a browser (for example an in-app browser tab). Authsignal sends the user back to
+   the application's `redirect_uri` from the authorize request, with `challenge_token` appended.
+3. The application posts the token to `/oauth2/authn`:
+
+   ```json
+   {
+     "flowId": "<flowId>",
+     "selectedAuthenticator": {
+       "authenticatorId": "<authenticatorId>",
+       "params": { "challenge_token": "<challenge_token>" }
+     }
+   }
+   ```
+
+The token is verified server side as in the browser flow. If the authorize request has no `redirect_uri`, Authsignal
+redirects to `/commonauth` instead.
 
 ### Conditional MFA with adaptive scripts
 
@@ -107,60 +146,110 @@ var onLoginRequest = function (context) {
 };
 ```
 
-Authsignal's own rules decide whether the user is challenged. Most risk logic therefore belongs in the Authsignal
-Portal, not in the script.
+The Authsignal flow decides whether and how the user is challenged. Most risk logic therefore belongs in the
+Authsignal Portal, not in the script.
+
+## Contact detail sync
+
+When `Authsignal.SyncContactDetails` is on for a tenant, the bundle's `AuthsignalUserOperationEventListener` sends
+new values of the `http://wso2.org/claims/emailaddress` and `http://wso2.org/claims/mobile` claims to the user's
+Authsignal account with Update User (`PATCH /users/{userId}`), marked as verified with `emailVerified` /
+`phoneNumberVerified` set to `true`. Authsignal only moves the user's email OTP / magic link and SMS authenticators to
+the new values when they are marked as verified, and does so without sending an OTP.
+
+Only values WSO2 has verified are sent: the user's `http://wso2.org/claims/identity/emailVerified` /
+`http://wso2.org/claims/identity/phoneVerified` claim must be `true` after the update. Unverified values should be
+changed through Authsignal's email and phone update flows instead.
+
+- It covers every way the claims change: Console, My Account, SCIM and the user store APIs.
+- When email or mobile verification on update is enabled, the change is synced only after the user verifies it,
+  because the claim itself only changes then.
+- Removed claims are not synced.
+- A mobile number that is not in E.164 format is not synced.
+- Users who do not exist on Authsignal are skipped. Federated (JIT provisioned) users are identified on Authsignal by
+  their subject identifier and are not synced.
+- A failed sync never fails the profile update. A warning is logged and Authsignal keeps the old value.
+
+## User deletion
+
+When `Authsignal.DeleteUsers` is on for a tenant (the default), `AuthsignalUserOperationEventListener` deletes the
+user and their authenticators on Authsignal with Delete User (`DELETE /users/{userId}`) when the user is deleted in
+WSO2. This stops a new user who is given the same Authsignal user ID, for example the same username with
+`Authsignal.UserIdentifier` set to `username`, from inheriting the deleted user's authenticators.
+
+- It covers every way a user is deleted: Console, SCIM and the user store APIs.
+- The Authsignal user ID is resolved before the deletion, while the user still exists, and the user is deleted on
+  Authsignal only after the deletion succeeds in WSO2.
+- Users who do not exist on Authsignal are skipped.
+- A failed call never fails the user deletion. A warning is logged and the user must be deleted in the Authsignal
+  Portal.
 
 ## Registration and password recovery flows
 
 The bundle also registers **`AuthsignalExecutor`**, which adds Authsignal to the flows built in Console > **Flows**:
 self registration, invited-user registration and password recovery. It works with the hosted portal (`/accounts`).
 
-### How the user is mapped
+### Registration
 
-During registration the WSO2 user UUID does not exist yet when the executor runs. The executor therefore
-generates a random UUID as the Authsignal user ID and enrols the user under it. On success it returns the ID as the
-`http://wso2.org/claims/authsignalUserId` claim, which is saved when the user is created. The authenticator and the
-executor always use this claim when it is set, and otherwise fall back to `UserIdentifier`. Authenticators enrolled
-at signup are therefore used at sign-in, and existing users are unaffected.
+During registration the WSO2 user does not exist yet. The executor starts the `sign-up` flow with the email address
+the user entered as `user.email` and the E.164 mobile number as `hints.phoneNumber` (or with the mobile number as
+`user.phoneNumber` if there is no email address), and keeps the returned `challengeId` in the flow context. The user
+verifies the email address and phone number in the pre-built UI.
 
-If the flow fails after enrolment (for example, user creation fails), the executor deletes the Authsignal user it
-created (best effort).
+On return the executor verifies the flow and checks that the email address (or phone number) it started with is among
+the verified authenticators, so a token from another sign-up cannot be replayed (ASIG-60008). Once the registration
+flow creates the user, the bundle's **`AuthsignalFlowExecutionListener`** calls Identify User
+(`POST /identify {userId, challengeId}`), which moves everything enrolled in the flow to the user's Authsignal user ID,
+and saves the verified email address and phone number on the user, with the email / phone verified claims set to
+`true`. A failure there is logged and does not fail the registration, as the user is already created. If the
+registration is pending approval, the user is not created when the flow completes and is not linked.
 
-### Challenge round trip
+### Passkey enrolled claim
+
+Whenever an Authsignal flow succeeds, the user's `http://wso2.org/claims/authsignalPasskeyEnrolled` claim is
+set to `true` if the user has a passkey on Authsignal (a `PASSKEY` authenticator on the user, or a `PASSKEY` step
+completed in the flow, such as one enrolled in it), and to `false` otherwise. In registration the claim is saved with
+the verified contact details once the user is created; in the other flows the executor saves it right after the
+verification. The `AuthsignalAuthenticator` saves it the same way after every successful sign-in flow, so a passkey
+enrolled or removed on Authsignal is reflected on the next login (federated users, who have no local profile, are
+skipped). Add the claim to the local claim dialect first. A failure to save it is logged and does not fail the
+flow or the login.
+
+### Round trip
 
 ```text
-AuthsignalExecutor ── POST /users/{id}/actions/{signUp|passwordRecovery}, redirectUrl = <portal>?code=<nonce>&state=<nonce>
-        ├─ ALLOW / BLOCK / REVIEW_REQUIRED → continue / fail, as for sign-in
-        └─ CHALLENGE_REQUIRED → portal redirects to the Authsignal pre-built UI
+AuthsignalExecutor ── POST /flows {actionCode, user, hints, redirectUrl = <portal>?code=<nonce>&state=<nonce>}
+        └─ portal redirects to challengeUrl (Authsignal pre-built UI)
                                       │
-                    302 back to <portal>?code=<nonce>&state=<nonce>&token=<jwt>  (token ignored)
+                    302 back to <portal>?code=<nonce>&state=<nonce>&challenge_token=<token>
                                       │
-portal resumes the flow with {code, state}
-AuthsignalExecutor ── checks both nonces (one-time), then GET /users/{id}/actions/{action}/{idempotencyKey}
-        └─ continues only if the action is CHALLENGE_SUCCEEDED
+portal resumes the flow with {code, state, challenge_token}
+AuthsignalExecutor ── checks both nonces (one-time), then POST /flows/verify {actionCode, challengeToken}
+        └─ continues only if action.state = CHALLENGE_SUCCEEDED and the flow belongs to this user
 ```
 
-The hosted portal resumes a flow only with `code` + `state`, so the Authsignal `token` is not used. The result is read
-server to server with the user ID, action and idempotency key kept in the flow context.
+**Portal requirement:** Verify Flow needs the `challenge_token` Authsignal appends to the redirect URL; the token
+returned by Start Flow is invalidated as the user completes steps. The executor therefore requires `challenge_token`
+next to `code` and `state`. The hosted portal (`accounts/execution-flow.jsp`) must post it back when it resumes the
+flow; current versions post only `code` and `state`.
 
 ### Setup
 
-1. Create the local claim `http://wso2.org/claims/authsignalUserId` (Console > User Attributes & Stores >
-   Attributes). Map it to a user store attribute and do not display it on the user profile. Registration flows fail
-   with AUTHSIGNAL-60018 until it exists.
-2. In the Authsignal Portal, add rules for the `signUp` and `passwordRecovery` actions. For enrolment at signup, make
-   `signUp` always challenge: the pre-built UI then lets the new user enrol a passkey or other authenticator.
-3. In Console > **Flows**, add the **Authsignal** node:
-   - **Registration:** after the attribute collection form and **before** the user onboarding step.
+1. In the Authsignal Portal, configure the `sign-up` and `password-reset` flows (or the action codes set in
+   `Authsignal.RegistrationFlowRef` / `Authsignal.RecoveryFlowRef`). For `sign-up`, verify the email address and then
+   the phone number.
+2. In Console > **Flows**, add the **Authsignal** node:
+   - **Registration:** after the attribute collection form and **before** the user onboarding step. Collect the email
+     address or mobile number in the form.
    - **Password recovery:** after the user is identified and before the password reset step.
 
    Like Email OTP, the node needs no connection. The Console's password recovery check accepts only Email OTP,
    SMS OTP, Magic Link or authentication executors (which require a connection) as the recovery factor, so keep one
    of those before the reset step and use Authsignal as an extra check.
 
-In password recovery only users who are already enrolled may continue (AUTHSIGNAL-60022). Otherwise whoever started
-the recovery could enrol their own authenticator in the pre-built UI. Contact details are not sent to Authsignal in
-recovery. Unknown users get a generic error.
+In password recovery, only verifications with authenticators the user already had are accepted (ASIG-60017). If the
+flow enrolled a new authenticator, the recovery fails, as whoever started it could otherwise enrol their own. Unknown
+users get a generic error.
 
 ## Troubleshooting
 
@@ -173,25 +262,22 @@ logger.authsignal.level = DEBUG
 
 | Error code | Meaning |
 |---|---|
-| AUTHSIGNAL-60001 | No user identified before the Authsignal step. Move it to step 2 or later. |
-| AUTHSIGNAL-60002 | The tenant has not set `__secret__.Authsignal.SecretKey`. |
-| AUTHSIGNAL-60005 / 60006 | Authsignal API call failed. Check the tenant's secret key and region, and network egress. |
-| AUTHSIGNAL-60015 | The tenant's `Authsignal.Region` is not one of `us`, `eu`, `au`, `ca`, `uk`. |
-| AUTHSIGNAL-60016 | The tenant's Authsignal configuration could not be read. |
-| AUTHSIGNAL-60007 / 60008 | Authsignal returned BLOCK / REVIEW_REQUIRED. |
-| AUTHSIGNAL-60010 | The user failed or abandoned the challenge. |
-| AUTHSIGNAL-60011 | The token does not belong to the action tracked in this login. |
-| AUTHSIGNAL-60017 | The `authsignalUserId` claim could not be read. The step fails instead of falling back to another ID. |
-| AUTHSIGNAL-60018 | Registration flow: the `authsignalUserId` claim is not configured in the tenant. |
-| AUTHSIGNAL-60020 | The flow has no portal URL to return to after the challenge. |
-| AUTHSIGNAL-60021 / 60022 | Password recovery: the user does not exist / has no Authsignal authenticator enrolled. |
-| AUTHSIGNAL-60023 | The `code` / `state` returned to the flow do not match (forged, or a reused link). |
-| AUTHSIGNAL-60024 | Reading the action result from Authsignal failed. |
+| ASIG-60001 | No user identified before the Authsignal step. Move it to step 2 or later. |
+| ASIG-60002 | The tenant has not set `__secret__.Authsignal.SecretKey`. |
+| ASIG-60004 | The Authsignal user ID of the user could not be resolved. |
+| ASIG-60005 / 60006 | Start Flow / Verify Flow failed. Check the tenant's secret key, region, flow action codes and network egress. |
+| ASIG-60007 | The user failed or abandoned the flow. |
+| ASIG-60008 | The challenge token does not belong to the user or registration this flow started. |
+| ASIG-60011 | The `challenge_token` is missing on return. For registration and recovery, check that the portal forwards it. |
+| ASIG-60012 | The tenant's `Authsignal.Region` is not one of `us`, `eu`, `au`, `ca`, `uk`. |
+| ASIG-60013 | The tenant's Authsignal configuration could not be read. |
+| ASIG-60015 | The flow has no portal URL to return to after the challenge. |
+| ASIG-60016 / 60017 | Password recovery: the user does not exist / enrolled a new authenticator instead of verifying an existing one. |
+| ASIG-60018 | The `code` / `state` returned to the flow do not match (forged, or a reused link). |
+| ASIG-60019 | Registration: neither an email address nor an E.164 mobile number was entered. |
 
 ## Limitations / future work
 
-- Browser redirect flows only. App-native (API-based) authentication is not implemented
-  (`isAPIBasedAuthenticationSupported()` returns `false`).
 - Second-factor only. Using it as a passwordless first factor would need an identifier-first step or the client-side
   passkey flow from [authsignal-wso2-authenticator](https://github.com/authsignal-examples/authsignal-wso2-authenticator).
 - The secret key is masked by the REST API but stored unencrypted with the tenant's resident IdP properties, as with

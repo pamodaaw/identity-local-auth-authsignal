@@ -25,10 +25,8 @@ import org.testng.annotations.AfterMethod;
 import org.testng.annotations.BeforeMethod;
 import org.testng.annotations.Test;
 import org.wso2.carbon.identity.local.auth.authsignal.exception.AuthsignalClientException;
-import org.wso2.carbon.identity.local.auth.authsignal.model.GetActionResponse;
-import org.wso2.carbon.identity.local.auth.authsignal.model.TrackActionRequest;
-import org.wso2.carbon.identity.local.auth.authsignal.model.TrackActionResponse;
-import org.wso2.carbon.identity.local.auth.authsignal.model.ValidateChallengeResponse;
+import org.wso2.carbon.identity.local.auth.authsignal.model.FlowResponse;
+import org.wso2.carbon.identity.local.auth.authsignal.model.StartFlowRequest;
 
 import java.io.IOException;
 import java.io.OutputStream;
@@ -84,68 +82,122 @@ public class AuthsignalClientTest {
     }
 
     @Test
-    public void testTrackActionChallengeRequired() throws Exception {
+    public void testStartFlowForExistingUser() throws Exception {
 
         responseStatus = 200;
-        responseBody = "{\"state\":\"CHALLENGE_REQUIRED\",\"url\":\"https://signin.authsignal.com/abc\","
-                + "\"idempotencyKey\":\"idem-1\",\"isEnrolled\":true,\"ruleIds\":[]}";
+        responseBody = "{\"challengeUrl\":\"https://signin.authsignal.com/abc\",\"challengeId\":\"ch-1\","
+                + "\"challengeToken\":\"start-tok\",\"action\":{\"state\":\"CHALLENGE_REQUIRED\","
+                + "\"completedSteps\":[]}}";
 
-        TrackActionResponse response = new AuthsignalClient(baseUrl, SECRET, 5000).trackAction("user 1/x",
-                "signIn", new TrackActionRequest().setRedirectUrl("https://is/commonauth?sessionDataKey=k")
-                        .setEmail("a@b.com"));
+        FlowResponse response = new AuthsignalClient(baseUrl, SECRET, 5000).startFlow(
+                new StartFlowRequest("sign-in").setUserId("u1")
+                        .setRedirectUrl("https://is/commonauth?sessionDataKey=k")
+                        .setIpAddress("203.0.113.10"));
 
+        assertEquals(response.getChallengeUrl(), "https://signin.authsignal.com/abc");
+        assertEquals(response.getChallengeId(), "ch-1");
+        assertEquals(response.getChallengeToken(), "start-tok");
         assertEquals(response.getState(), "CHALLENGE_REQUIRED");
-        assertEquals(response.getUrl(), "https://signin.authsignal.com/abc");
-        assertEquals(response.getIdempotencyKey(), "idem-1");
-        assertTrue(response.getIsEnrolled());
-        assertEquals(lastPath.get(), "/v1/users/user%201%2Fx/actions/signIn");
+        assertEquals(lastMethod.get(), "POST");
+        assertEquals(lastPath.get(), "/v1/flows");
         assertEquals(lastAuthorization.get(), "Basic " + Base64.getEncoder()
                 .encodeToString((SECRET + ":").getBytes(StandardCharsets.UTF_8)));
 
         JsonObject body = JsonParser.parseString(lastBody.get()).getAsJsonObject();
+        assertEquals(body.get("actionCode").getAsString(), "sign-in");
+        assertEquals(body.getAsJsonObject("user").get("userId").getAsString(), "u1");
+        assertEquals(body.getAsJsonObject("user").size(), 1, "Authsignal takes one user identifier only");
         assertEquals(body.get("redirectUrl").getAsString(), "https://is/commonauth?sessionDataKey=k");
-        assertEquals(body.get("email").getAsString(), "a@b.com");
-        assertFalse(body.has("phoneNumber"), "Null fields must be omitted");
+        assertEquals(body.getAsJsonObject("attributes").get("ipAddress").getAsString(), "203.0.113.10");
+        assertFalse(body.has("hints"), "Null fields must be omitted");
     }
 
     @Test
-    public void testValidateChallenge() throws Exception {
+    public void testStartFlowForNewUser() throws Exception {
 
         responseStatus = 200;
-        responseBody = "{\"isValid\":true,\"state\":\"CHALLENGE_SUCCEEDED\",\"userId\":\"u1\",\"action\":\"signIn\","
-                + "\"idempotencyKey\":\"idem-1\",\"verificationMethod\":\"PASSKEY\"}";
+        responseBody = "{\"challengeUrl\":\"https://signin.authsignal.com/abc\",\"challengeId\":\"ch-1\"}";
 
-        ValidateChallengeResponse response = new AuthsignalClient(baseUrl, SECRET, 5000)
-                .validateChallenge("tok", "u1", "signIn");
-
-        assertTrue(response.isValid());
-        assertEquals(response.getState(), "CHALLENGE_SUCCEEDED");
-        assertEquals(response.getUserId(), "u1");
-        assertEquals(response.getIdempotencyKey(), "idem-1");
-        assertEquals(response.getVerificationMethod(), "PASSKEY");
-        assertEquals(lastPath.get(), "/v1/validate");
+        new AuthsignalClient(baseUrl, SECRET, 5000).startFlow(new StartFlowRequest("sign-up")
+                .setUserEmail("jane@example.com").setHintPhoneNumber("+15550100"));
 
         JsonObject body = JsonParser.parseString(lastBody.get()).getAsJsonObject();
-        assertEquals(body.get("token").getAsString(), "tok");
-        assertEquals(body.get("userId").getAsString(), "u1");
-        assertEquals(body.get("action").getAsString(), "signIn");
+        assertEquals(body.getAsJsonObject("user").get("email").getAsString(), "jane@example.com");
+        assertFalse(body.getAsJsonObject("user").has("userId"));
+        assertEquals(body.getAsJsonObject("hints").get("phoneNumber").getAsString(), "+15550100");
+        assertFalse(body.getAsJsonObject("hints").has("email"));
     }
 
     @Test
-    public void testGetAction() throws Exception {
+    public void testVerifyFlow() throws Exception {
 
         responseStatus = 200;
-        responseBody = "{\"state\":\"CHALLENGE_SUCCEEDED\",\"verificationMethod\":\"PASSKEY\","
-                + "\"createdAt\":\"2026-10-06T10:00:00Z\",\"ruleIds\":[]}";
+        responseBody = "{\"action\":{\"state\":\"CHALLENGE_SUCCEEDED\",\"completedSteps\":[{\"stepType\":"
+                + "\"VERIFICATION_REQUIRED\",\"verificationMethod\":\"EMAIL_OTP\",\"userAuthenticatorId\":\"a1\"}]},"
+                + "\"user\":{\"userId\":\"u1\",\"authenticators\":[{\"userAuthenticatorId\":\"a1\","
+                + "\"verificationMethod\":\"EMAIL_OTP\",\"email\":\"jane@example.com\"},"
+                + "{\"userAuthenticatorId\":\"a2\",\"verificationMethod\":\"SMS\",\"phoneNumber\":\"+15550100\"},"
+                + "{\"userAuthenticatorId\":\"a3\",\"verificationMethod\":\"PASSKEY\"}]}}";
 
-        GetActionResponse response = new AuthsignalClient(baseUrl, SECRET, 5000)
-                .getAction("user 1/x", "signUp", "idem/1");
+        FlowResponse response = new AuthsignalClient(baseUrl, SECRET, 5000).verifyFlow("sign-in", "tok");
 
         assertEquals(response.getState(), "CHALLENGE_SUCCEEDED");
-        assertEquals(response.getVerificationMethod(), "PASSKEY");
-        assertEquals(lastMethod.get(), "GET");
-        assertEquals(lastPath.get(), "/v1/users/user%201%2Fx/actions/signUp/idem%2F1");
-        assertEquals(lastBody.get(), "");
+        assertEquals(response.getAction().getCompletedSteps().get(0).getStepType(), "VERIFICATION_REQUIRED");
+        assertEquals(response.getUser().getUserId(), "u1");
+        assertEquals(response.getUser().getVerifiedEmail(), "jane@example.com");
+        assertEquals(response.getUser().getVerifiedPhoneNumber(), "+15550100");
+        assertEquals(lastPath.get(), "/v1/flows/verify");
+        JsonObject body = JsonParser.parseString(lastBody.get()).getAsJsonObject();
+        assertEquals(body.get("actionCode").getAsString(), "sign-in");
+        assertEquals(body.get("challengeToken").getAsString(), "tok");
+    }
+
+    @Test
+    public void testIdentifyUser() throws Exception {
+
+        responseStatus = 200;
+        responseBody = "{\"user\":{\"userId\":\"u1\",\"authenticators\":[]}}";
+
+        FlowResponse response = new AuthsignalClient(baseUrl, SECRET, 5000).identifyUser("u1", "ch-1");
+
+        assertEquals(response.getUser().getUserId(), "u1");
+        assertEquals(lastPath.get(), "/v1/identify");
+        JsonObject body = JsonParser.parseString(lastBody.get()).getAsJsonObject();
+        assertEquals(body.get("userId").getAsString(), "u1");
+        assertEquals(body.get("challengeId").getAsString(), "ch-1");
+    }
+
+    @Test
+    public void testUpdateVerifiedContactDetails() throws Exception {
+
+        responseStatus = 200;
+        responseBody = "{\"userId\":\"u 1/x\"}";
+
+        new AuthsignalClient(baseUrl, SECRET, 5000).updateVerifiedContactDetails("u 1/x", "jane@example.com",
+                "+15550100");
+
+        assertEquals(lastMethod.get(), "PATCH");
+        assertEquals(lastPath.get(), "/v1/users/u%201%2Fx");
+        JsonObject body = JsonParser.parseString(lastBody.get()).getAsJsonObject();
+        assertEquals(body.get("email").getAsString(), "jane@example.com");
+        assertTrue(body.get("emailVerified").getAsBoolean());
+        assertEquals(body.get("phoneNumber").getAsString(), "+15550100");
+        assertTrue(body.get("phoneNumberVerified").getAsBoolean());
+    }
+
+    @Test
+    public void testUpdateVerifiedEmailOnly() throws Exception {
+
+        responseStatus = 200;
+        responseBody = "{\"userId\":\"u1\"}";
+
+        new AuthsignalClient(baseUrl, SECRET, 5000).updateVerifiedContactDetails("u1", "jane@example.com", null);
+
+        JsonObject body = JsonParser.parseString(lastBody.get()).getAsJsonObject();
+        assertEquals(body.get("email").getAsString(), "jane@example.com");
+        assertTrue(body.get("emailVerified").getAsBoolean());
+        assertFalse(body.has("phoneNumber"));
+        assertFalse(body.has("phoneNumberVerified"));
     }
 
     @Test
@@ -154,10 +206,32 @@ public class AuthsignalClientTest {
         responseStatus = 200;
         responseBody = "{\"success\":true}";
 
-        new AuthsignalClient(baseUrl, SECRET, 5000).deleteUser("gen-1");
+        new AuthsignalClient(baseUrl, SECRET, 5000).deleteUser("u 1/x");
 
         assertEquals(lastMethod.get(), "DELETE");
-        assertEquals(lastPath.get(), "/v1/users/gen-1");
+        assertEquals(lastPath.get(), "/v1/users/u%201%2Fx");
+    }
+
+    @Test
+    public void testDeleteUserWithEmptyResponse() throws Exception {
+
+        responseStatus = 200;
+        responseBody = "";
+
+        new AuthsignalClient(baseUrl, SECRET, 5000).deleteUser("u1");
+
+        assertEquals(lastMethod.get(), "DELETE");
+    }
+
+    @Test
+    public void testDeleteUnknownUser() {
+
+        responseStatus = 404;
+        responseBody = "{\"error\":\"not_found\"}";
+
+        AuthsignalClientException e = expectThrows(AuthsignalClientException.class,
+                () -> new AuthsignalClient(baseUrl, SECRET, 5000).deleteUser("u1"));
+        assertEquals(e.getStatusCode(), 404);
     }
 
     @Test
@@ -167,7 +241,7 @@ public class AuthsignalClientTest {
         responseBody = "{\"error\":\"unauthorized\"}";
 
         AuthsignalClientException e = expectThrows(AuthsignalClientException.class,
-                () -> new AuthsignalClient(baseUrl, SECRET, 5000).validateChallenge("tok", null, null));
+                () -> new AuthsignalClient(baseUrl, SECRET, 5000).verifyFlow("sign-in", "tok"));
         assertEquals(e.getStatusCode(), 401);
     }
 
@@ -178,6 +252,6 @@ public class AuthsignalClientTest {
         responseBody = "not json";
 
         expectThrows(AuthsignalClientException.class,
-                () -> new AuthsignalClient(baseUrl, SECRET, 5000).validateChallenge("tok", null, null));
+                () -> new AuthsignalClient(baseUrl, SECRET, 5000).verifyFlow("sign-in", "tok"));
     }
 }

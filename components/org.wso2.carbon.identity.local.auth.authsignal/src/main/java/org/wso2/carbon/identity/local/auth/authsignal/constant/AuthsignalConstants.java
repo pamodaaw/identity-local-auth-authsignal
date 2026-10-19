@@ -31,96 +31,17 @@ public class AuthsignalConstants {
 
     }
 
-    public static final String AUTHENTICATOR_NAME = "AuthsignalAuthenticator";
-    public static final String AUTHENTICATOR_FRIENDLY_NAME = "Authsignal";
-    public static final String AUTHENTICATOR_I18N_KEY = "authenticator.authsignal";
-
-    // Request parameters.
-    public static final String SESSION_DATA_KEY = "sessionDataKey";
-    // Authsignal appends this query parameter to the redirect URL once the pre-built UI challenge completes.
-    public static final String TOKEN_PARAM = "token";
-    public static final String USER_AGENT_HEADER = "User-Agent";
-
-    // Authentication context property keys.
-    public static final String CONTEXT_PROP_IDEMPOTENCY_KEY = "authsignal.idempotencyKey";
-    public static final String CONTEXT_PROP_AUTHSIGNAL_USER_ID = "authsignal.userId";
-
-    // Claim URIs used to pre-fill the user's contact details on Authsignal.
+    // Claim URIs of the user's contact details.
     public static final String EMAIL_CLAIM = "http://wso2.org/claims/emailaddress";
     public static final String MOBILE_CLAIM = "http://wso2.org/claims/mobile";
+    // Identity claims set by WSO2 when the user verifies the email address or mobile number.
+    public static final String EMAIL_VERIFIED_CLAIM = "http://wso2.org/claims/identity/emailVerified";
+    public static final String MOBILE_VERIFIED_CLAIM = "http://wso2.org/claims/identity/phoneVerified";
+    // Claim recording whether the user has a passkey on Authsignal.
+    public static final String PASSKEY_ENROLLED_CLAIM = "http://wso2.org/claims/authsignalPasskeyEnrolled";
 
-    // Maps a WSO2 user to the Authsignal user ID chosen when the user enrolled during self registration, before the
-    // WSO2 user UUID existed. Takes precedence over the UserIdentifier strategy.
-    public static final String AUTHSIGNAL_USER_ID_CLAIM = "http://wso2.org/claims/authsignalUserId";
-
-    /**
-     * Constants of the Authsignal flow executor, used in registration and password recovery flows.
-     */
-    public static class Executor {
-
-        private Executor() {
-
-        }
-
-        public static final String EXECUTOR_NAME = "AuthsignalExecutor";
-        public static final String EXECUTOR_DESCRIPTION =
-                "Verify or enrol the user with Authsignal adaptive MFA during registration and password recovery.";
-
-        // Flow types, as defined by org.wso2.carbon.identity.flow.mgt.Constants.FlowTypes.
-        public static final String REGISTRATION = "REGISTRATION";
-        public static final String INVITED_USER_REGISTRATION = "INVITED_USER_REGISTRATION";
-        public static final String PASSWORD_RECOVERY = "PASSWORD_RECOVERY";
-
-        // Inputs the hosted portal posts back after an external redirection.
-        public static final String CODE_PARAM = "code";
-        public static final String STATE_PARAM = "state";
-
-        // Flow context property keys of a pending challenge.
-        public static final String CONTEXT_PROP_USER_ID = "authsignal.flow.userId";
-        public static final String CONTEXT_PROP_ACTION_CODE = "authsignal.flow.actionCode";
-        public static final String CONTEXT_PROP_IDEMPOTENCY_KEY = "authsignal.flow.idempotencyKey";
-        public static final String CONTEXT_PROP_STATE = "authsignal.flow.state";
-        public static final String CONTEXT_PROP_CODE = "authsignal.flow.code";
-        // Authsignal user ID generated in this flow. Kept across retries so a user is never enrolled twice.
-        public static final String CONTEXT_PROP_GENERATED_USER_ID = "authsignal.flow.generatedUserId";
-        // Set once a challenge for the generated user ID succeeded, so rollback knows there is something to remove.
-        public static final String CONTEXT_PROP_ENROLLED = "authsignal.flow.enrolled";
-    }
-
-    /**
-     * Tenant-wise configuration, exposed as an identity governance connector. Tenant admins manage it through the
-     * identity-governance REST API / Console, and it is stored as resident IdP properties of the tenant.
-     */
-    public static class ConnectorConfig {
-
-        private ConnectorConfig() {
-
-        }
-
-        public static final String CONNECTOR_NAME = "authsignal-authenticator";
-        public static final String CONNECTOR_FRIENDLY_NAME = "Authsignal";
-        public static final String CONNECTOR_CATEGORY = "Multi Factor Authenticators";
-        public static final String CONNECTOR_SUB_CATEGORY = "DEFAULT";
-        public static final int CONNECTOR_ORDER = 0;
-
-        // The __secret__ prefix renders the field as a password input; the property is also marked confidential so
-        // the governance REST API masks it in responses.
-        public static final String SECRET_KEY = "__secret__.Authsignal.SecretKey";
-        public static final String REGION = "Authsignal.Region";
-        public static final String ACTION_CODE = "Authsignal.ActionCode";
-        public static final String USER_IDENTIFIER = "Authsignal.UserIdentifier";
-        public static final String SEND_EMAIL = "Authsignal.SendEmail";
-        public static final String SEND_PHONE_NUMBER = "Authsignal.SendPhoneNumber";
-        public static final String REDIRECT_TO_SETTINGS = "Authsignal.RedirectToSettings";
-        public static final String ALLOW_ON_REVIEW_REQUIRED = "Authsignal.AllowOnReviewRequired";
-        public static final String REGISTRATION_ACTION_CODE = "Authsignal.RegistrationActionCode";
-        public static final String RECOVERY_ACTION_CODE = "Authsignal.RecoveryActionCode";
-
-        public static final String[] PROPERTY_NAMES = {SECRET_KEY, REGION, ACTION_CODE, USER_IDENTIFIER, SEND_EMAIL,
-                SEND_PHONE_NUMBER, REDIRECT_TO_SETTINGS, ALLOW_ON_REVIEW_REQUIRED, REGISTRATION_ACTION_CODE,
-                RECOVERY_ACTION_CODE};
-    }
-
+    // Query parameter Authsignal appends to the redirect URL once the user completes a flow in the pre-built UI.
+    public static final String CHALLENGE_TOKEN_PARAM = "challenge_token";
 
     /**
      * Default values for the configuration.
@@ -132,14 +53,18 @@ public class AuthsignalConstants {
         }
 
         public static final String REGION = Region.US;
-        public static final String ACTION_CODE = "signIn";
         public static final String USER_IDENTIFIER = UserIdentifier.USER_ID;
-        public static final boolean SEND_EMAIL = true;
-        public static final boolean SEND_PHONE_NUMBER = true;
-        public static final boolean REDIRECT_TO_SETTINGS = false;
-        public static final boolean ALLOW_ON_REVIEW_REQUIRED = false;
-        public static final String REGISTRATION_ACTION_CODE = "signUp";
-        public static final String RECOVERY_ACTION_CODE = "passwordRecovery";
+        // Action codes of the flows configured in the Authsignal Portal, one per journey.
+        public static final String SIGN_IN_FLOW_REF = "sign-in";
+        public static final String REGISTRATION_FLOW_REF = "sign-up";
+        public static final String RECOVERY_FLOW_REF = "password-reset";
+        // Off by default so that a tenant does not start sharing contact details with Authsignal without opting in.
+        public static final boolean SYNC_CONTACT_DETAILS = false;
+        /*
+         * On by default so that a deleted user's authenticators do not linger on Authsignal, where a new user given the
+         * same Authsignal user ID (for example the same username) would inherit them.
+         */
+        public static final boolean DELETE_USERS = true;
         public static final int REQUEST_TIMEOUT_MILLIS = 10000;
     }
 
@@ -188,23 +113,48 @@ public class AuthsignalConstants {
     }
 
     /**
-     * Authsignal action states.
-     * See https://docs.authsignal.com/api-reference/server-api/track-action
+     * States of an Authsignal flow.
+     * See https://docs.authsignal.com/api-reference/server-api/verify-flow
      */
-    public static class ActionState {
+    public static class FlowState {
 
-        private ActionState() {
+        private FlowState() {
 
         }
 
-        public static final String ALLOW = "ALLOW";
-        public static final String BLOCK = "BLOCK";
         public static final String CHALLENGE_REQUIRED = "CHALLENGE_REQUIRED";
         public static final String CHALLENGE_SUCCEEDED = "CHALLENGE_SUCCEEDED";
         public static final String CHALLENGE_FAILED = "CHALLENGE_FAILED";
-        public static final String REVIEW_REQUIRED = "REVIEW_REQUIRED";
-        public static final String REVIEW_SUCCEEDED = "REVIEW_SUCCEEDED";
-        public static final String REVIEW_FAILED = "REVIEW_FAILED";
+    }
+
+    /**
+     * Types of the steps completed in an Authsignal flow.
+     */
+    public static class StepType {
+
+        private StepType() {
+
+        }
+
+        public static final String VERIFICATION_REQUIRED = "VERIFICATION_REQUIRED";
+        public static final String ENROLLMENT_REQUIRED = "ENROLLMENT_REQUIRED";
+        public static final String ENROLLMENT_OPTIONAL = "ENROLLMENT_OPTIONAL";
+    }
+
+    /**
+     * Authsignal verification methods that carry the user's email address or phone number.
+     */
+    public static class VerificationMethod {
+
+        private VerificationMethod() {
+
+        }
+
+        public static final String EMAIL_OTP = "EMAIL_OTP";
+        public static final String EMAIL_MAGIC_LINK = "EMAIL_MAGIC_LINK";
+        public static final String SMS = "SMS";
+        public static final String WHATSAPP = "WHATSAPP";
+        public static final String PASSKEY = "PASSKEY";
     }
 
     /**
@@ -212,54 +162,44 @@ public class AuthsignalConstants {
      */
     public enum ErrorMessages {
 
-        ERROR_CODE_NO_AUTHENTICATED_USER("AUTHSIGNAL-60001",
+        ERROR_CODE_NO_AUTHENTICATED_USER("ASIG-60001",
                 "No authenticated user found. Authsignal must be configured after a step that identifies the user."),
-        ERROR_CODE_SECRET_KEY_NOT_CONFIGURED("AUTHSIGNAL-60002",
+        ERROR_CODE_SECRET_KEY_NOT_CONFIGURED("ASIG-60002",
                 "Authsignal secret key is not configured for the tenant."),
-        ERROR_CODE_INVALID_USER_IDENTIFIER("AUTHSIGNAL-60003",
+        ERROR_CODE_INVALID_USER_IDENTIFIER("ASIG-60003",
                 "Unsupported Authsignal user identifier configuration: %s."),
-        ERROR_CODE_RESOLVING_USER_ID("AUTHSIGNAL-60004",
-                "Error while resolving the Authsignal user ID for the authenticated user."),
-        ERROR_CODE_TRACK_ACTION_FAILED("AUTHSIGNAL-60005",
-                "Error while tracking the action on Authsignal."),
-        ERROR_CODE_VALIDATE_CHALLENGE_FAILED("AUTHSIGNAL-60006",
-                "Error while validating the challenge on Authsignal."),
-        ERROR_CODE_ACTION_BLOCKED("AUTHSIGNAL-60007",
-                "Authsignal blocked the sign-in attempt."),
-        ERROR_CODE_ACTION_REVIEW_REQUIRED("AUTHSIGNAL-60008",
-                "Authsignal flagged the sign-in attempt for review."),
-        ERROR_CODE_UNEXPECTED_ACTION_STATE("AUTHSIGNAL-60009",
-                "Unexpected action state returned by Authsignal: %s."),
-        ERROR_CODE_CHALLENGE_NOT_SUCCEEDED("AUTHSIGNAL-60010",
+        ERROR_CODE_RESOLVING_USER_ID("ASIG-60004",
+                "Error while resolving the Authsignal user ID for the user."),
+        ERROR_CODE_START_FLOW_FAILED("ASIG-60005",
+                "Error while starting the flow on Authsignal."),
+        ERROR_CODE_VERIFY_FLOW_FAILED("ASIG-60006",
+                "Error while verifying the flow on Authsignal."),
+        ERROR_CODE_CHALLENGE_NOT_SUCCEEDED("ASIG-60007",
                 "The Authsignal challenge was not completed successfully."),
-        ERROR_CODE_CHALLENGE_MISMATCH("AUTHSIGNAL-60011",
-                "The Authsignal challenge result does not belong to the current authentication flow."),
-        ERROR_CODE_BUILDING_CALLBACK_URL("AUTHSIGNAL-60012",
-                "Error while building the Authsignal callback URL."),
-        ERROR_CODE_REDIRECTING("AUTHSIGNAL-60013",
-                "Error while redirecting the user to the Authsignal challenge."),
-        ERROR_CODE_MISSING_TOKEN("AUTHSIGNAL-60014",
-                "The Authsignal result token is missing in the request."),
-        ERROR_CODE_INVALID_REGION("AUTHSIGNAL-60015",
-                "Unsupported Authsignal region: %s."),
-        ERROR_CODE_READING_CONFIG("AUTHSIGNAL-60016",
-                "Error while reading the Authsignal configuration of the tenant."),
-        ERROR_CODE_READING_USER_ID_MAPPING("AUTHSIGNAL-60017",
-                "Error while reading the Authsignal user ID mapping of the user."),
-        ERROR_CODE_USER_ID_CLAIM_NOT_CONFIGURED("AUTHSIGNAL-60018",
-                "The claim " + AUTHSIGNAL_USER_ID_CLAIM + " is not configured in the tenant."),
-        ERROR_CODE_UNSUPPORTED_FLOW_TYPE("AUTHSIGNAL-60019",
-                "Authsignal is not supported in the flow type: %s."),
-        ERROR_CODE_PORTAL_URL_NOT_FOUND("AUTHSIGNAL-60020",
-                "The portal URL to return to after the Authsignal challenge is not available in the flow."),
-        ERROR_CODE_USER_NOT_IDENTIFIED("AUTHSIGNAL-60021",
-                "The user could not be verified."),
-        ERROR_CODE_USER_NOT_ENROLLED("AUTHSIGNAL-60022",
-                "The user could not be verified."),
-        ERROR_CODE_INVALID_CALLBACK("AUTHSIGNAL-60023",
+        ERROR_CODE_CHALLENGE_MISMATCH("ASIG-60008",
                 "The Authsignal challenge result does not belong to the current flow."),
-        ERROR_CODE_GET_ACTION_FAILED("AUTHSIGNAL-60024",
-                "Error while retrieving the action result from Authsignal.");
+        ERROR_CODE_BUILDING_CALLBACK_URL("ASIG-60009",
+                "Error while building the Authsignal callback URL."),
+        ERROR_CODE_REDIRECTING("ASIG-60010",
+                "Error while redirecting the user to the Authsignal challenge."),
+        ERROR_CODE_MISSING_TOKEN("ASIG-60011",
+                "The Authsignal challenge token is missing in the request."),
+        ERROR_CODE_INVALID_REGION("ASIG-60012",
+                "Unsupported Authsignal region: %s."),
+        ERROR_CODE_READING_CONFIG("ASIG-60013",
+                "Error while reading the Authsignal configuration of the tenant."),
+        ERROR_CODE_UNSUPPORTED_FLOW_TYPE("ASIG-60014",
+                "Authsignal is not supported in the flow type: %s."),
+        ERROR_CODE_PORTAL_URL_NOT_FOUND("ASIG-60015",
+                "The portal URL to return to after the Authsignal challenge is not available in the flow."),
+        ERROR_CODE_USER_NOT_IDENTIFIED("ASIG-60016",
+                "The user could not be verified."),
+        ERROR_CODE_USER_NOT_ENROLLED("ASIG-60017",
+                "The user could not be verified."),
+        ERROR_CODE_INVALID_CALLBACK("ASIG-60018",
+                "The Authsignal challenge result does not belong to the current flow."),
+        ERROR_CODE_CONTACT_DETAILS_NOT_FOUND("ASIG-60019",
+                "An email address or a mobile number is required to register with Authsignal.");
 
         private final String code;
         private final String message;

@@ -27,24 +27,23 @@ import org.wso2.carbon.identity.flow.execution.engine.model.FlowExecutionContext
 import org.wso2.carbon.identity.flow.execution.engine.model.FlowUser;
 import org.wso2.carbon.identity.flow.mgt.Constants.FlowTypes;
 import org.wso2.carbon.identity.local.auth.authsignal.client.AuthsignalClient;
+import org.wso2.carbon.identity.local.auth.authsignal.connector.AuthsignalConnectorConfig;
 import org.wso2.carbon.identity.local.auth.authsignal.constant.AuthsignalConstants;
-import org.wso2.carbon.identity.local.auth.authsignal.constant.AuthsignalConstants.ConnectorConfig;
-import org.wso2.carbon.identity.local.auth.authsignal.constant.AuthsignalConstants.Executor;
 import org.wso2.carbon.identity.local.auth.authsignal.exception.AuthsignalClientException;
 import org.wso2.carbon.identity.local.auth.authsignal.model.AuthsignalConfig;
-import org.wso2.carbon.identity.local.auth.authsignal.model.GetActionResponse;
-import org.wso2.carbon.identity.local.auth.authsignal.model.TrackActionRequest;
-import org.wso2.carbon.identity.local.auth.authsignal.model.TrackActionResponse;
+import org.wso2.carbon.identity.local.auth.authsignal.model.FlowResponse;
+import org.wso2.carbon.identity.local.auth.authsignal.model.StartFlowRequest;
 import org.wso2.carbon.user.api.UserStoreException;
 
 import java.net.URI;
+import java.util.ArrayList;
+import java.util.Collections;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
-import static org.mockito.ArgumentMatchers.eq;
-import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -64,12 +63,14 @@ public class AuthsignalExecutorTest {
     private static final String PORTAL_URL = "https://localhost:9443/accounts/register?flowType=REGISTRATION";
     private static final String CHALLENGE_URL = "https://signin.authsignal.com/challenge";
     private static final String USER_UUID = "8f1c1c0e-3a3b-4d3a-9a51-111111111111";
+    private static final String EMAIL = "alice@example.com";
+    private static final String MOBILE = "+94770000000";
 
     private AuthsignalClient client;
     private Map<String, String> tenantProperties;
-    private boolean claimConfigured;
-    private String mappedUserId;
     private String storeUserId;
+    private String savedClaimsUser;
+    private Map<String, String> savedClaims;
     private TestableExecutor executor;
 
     @BeforeMethod
@@ -77,10 +78,10 @@ public class AuthsignalExecutorTest {
 
         client = mock(AuthsignalClient.class);
         tenantProperties = new HashMap<>();
-        tenantProperties.put(ConnectorConfig.SECRET_KEY, "secret");
-        claimConfigured = true;
-        mappedUserId = null;
+        tenantProperties.put(AuthsignalConnectorConfig.SECRET_KEY, "secret");
         storeUserId = USER_UUID;
+        savedClaimsUser = null;
+        savedClaims = null;
         executor = new TestableExecutor();
     }
 
@@ -96,14 +97,20 @@ public class AuthsignalExecutorTest {
         assertTrue(executor.getSupportedFlowTypes().contains(FlowTypes.REGISTRATION));
         assertTrue(executor.getSupportedFlowTypes().contains(FlowTypes.PASSWORD_RECOVERY));
         assertTrue(executor.getSupportedFlowTypes().contains(FlowTypes.INVITED_USER_REGISTRATION));
+        // Supported once the framework defines the flow type.
+        for (FlowTypes flowType : FlowTypes.values()) {
+            if (AuthsignalExecutor.SECURED_SELF_SERVICE_OPERATIONS.equals(flowType.name())) {
+                assertTrue(executor.getSupportedFlowTypes().contains(flowType));
+            }
+        }
         assertTrue(executor.getInitiationData().isEmpty());
     }
 
     @Test
-    public void testRegistrationChallengeRedirectsWithGeneratedUserId() throws Exception {
+    public void testRegistrationStartsFlowWithEmailAndPhoneHint() throws Exception {
 
-        FlowExecutionContext context = registrationContext();
-        challengeRequired(true);
+        FlowExecutionContext context = registrationContext(EMAIL, MOBILE);
+        when(client.startFlow(any())).thenReturn(started());
 
         ExecutorResponse response = executor.execute(context);
 
@@ -113,281 +120,648 @@ public class AuthsignalExecutorTest {
         assertNotNull(state);
         assertTrue(response.getRequiredData().contains("code"));
         assertTrue(response.getRequiredData().contains("state"));
+        assertTrue(response.getRequiredData().contains("challenge_token"));
 
-        ArgumentCaptor<String> userId = ArgumentCaptor.forClass(String.class);
-        ArgumentCaptor<TrackActionRequest> request = ArgumentCaptor.forClass(TrackActionRequest.class);
-        verify(client).trackAction(userId.capture(), eq("signUp"), request.capture());
-        String generated = (String) context.getProperty(Executor.CONTEXT_PROP_GENERATED_USER_ID);
-        assertEquals(userId.getValue(), generated);
-        assertEquals(request.getValue().getEmail(), "alice@example.com");
-        assertEquals(request.getValue().getPhoneNumber(), "+94770000000");
+        StartFlowRequest request = captureStartRequest();
+        assertEquals(request.getActionCode(), "sign-up");
+        assertNull(request.getUserId(), "The WSO2 user does not exist yet");
+        assertEquals(request.getUserEmail(), EMAIL);
+        assertNull(request.getUserPhoneNumber(), "Authsignal takes one user identifier only");
+        assertEquals(request.getHintPhoneNumber(), MOBILE);
+        assertEquals(context.getProperty(AuthsignalExecutor.CONTEXT_PROP_PENDING_CHALLENGE_ID), "challenge-1");
 
         // The portal resumes the flow with the code and state the executor put in the redirect URL.
-        Map<String, String> query = query(request.getValue().getRedirectUrl());
-        assertTrue(request.getValue().getRedirectUrl().startsWith(PORTAL_URL + "&"));
+        Map<String, String> query = query(request.getRedirectUrl());
+        assertTrue(request.getRedirectUrl().startsWith(PORTAL_URL + "&"));
         assertEquals(query.get("state"), state);
-        assertEquals(query.get("code"), context.getProperty(Executor.CONTEXT_PROP_CODE));
+        assertEquals(query.get("code"), context.getProperty(AuthsignalExecutor.CONTEXT_PROP_CODE));
     }
 
     @Test
-    public void testRegistrationCallbackCompletesAndStoresClaim() throws Exception {
+    public void testRegistrationWithoutEmailStartsFlowWithPhone() throws Exception {
 
-        FlowExecutionContext context = registrationContext();
-        challengeRequired(true);
+        when(client.startFlow(any())).thenReturn(started());
+
+        executor.execute(registrationContext(null, MOBILE));
+
+        StartFlowRequest request = captureStartRequest();
+        assertEquals(request.getUserPhoneNumber(), MOBILE);
+        assertNull(request.getUserEmail());
+        assertNull(request.getHintPhoneNumber());
+    }
+
+    @Test
+    public void testRegistrationSkipsNonE164Mobile() throws Exception {
+
+        when(client.startFlow(any())).thenReturn(started());
+
+        executor.execute(registrationContext(EMAIL, "0770000000"));
+
+        assertNull(captureStartRequest().getHintPhoneNumber());
+    }
+
+    @Test
+    public void testRegistrationWithoutContactDetailsFails() throws Exception {
+
+        ExecutorResponse response = executor.execute(registrationContext(null, "0770000000"));
+
+        assertEquals(response.getResult(), "USER_ERROR");
+        assertEquals(response.getErrorCode(),
+                AuthsignalConstants.ErrorMessages.ERROR_CODE_CONTACT_DETAILS_NOT_FOUND.getCode());
+        verify(client, never()).startFlow(any());
+    }
+
+    @Test
+    public void testRegistrationWithoutChallengeIdFails() throws Exception {
+
+        FlowResponse startResponse = started();
+        startResponse.setChallengeId(null);
+        when(client.startFlow(any())).thenReturn(startResponse);
+
+        ExecutorResponse response = executor.execute(registrationContext(EMAIL, MOBILE));
+
+        assertEquals(response.getResult(), "ERROR");
+        assertEquals(response.getErrorCode(),
+                AuthsignalConstants.ErrorMessages.ERROR_CODE_START_FLOW_FAILED.getCode());
+    }
+
+    @Test
+    public void testConfiguredRegistrationFlowRef() throws Exception {
+
+        tenantProperties.put(AuthsignalConnectorConfig.REGISTRATION_FLOW_REF, "custom-sign-up");
+        when(client.startFlow(any())).thenReturn(started());
+
+        executor.execute(registrationContext(EMAIL, MOBILE));
+
+        assertEquals(captureStartRequest().getActionCode(), "custom-sign-up");
+    }
+
+    @Test
+    public void testRegistrationCallbackCompletesAndKeepsChallengeId() throws Exception {
+
+        FlowExecutionContext context = registrationContext(EMAIL, MOBILE);
+        when(client.startFlow(any())).thenReturn(started());
         ExecutorResponse redirect = executor.execute(context);
-        String generated = (String) context.getProperty(Executor.CONTEXT_PROP_GENERATED_USER_ID);
-        String code = (String) context.getProperty(Executor.CONTEXT_PROP_CODE);
-
-        when(client.getAction(generated, "signUp", "idem-1")).thenReturn(action("CHALLENGE_SUCCEEDED"));
-        callback(context, code, redirect.getAdditionalInfo().get("state"));
+        callback(context, redirect);
+        when(client.verifyFlow("sign-up", "tok")).thenReturn(verified("CHALLENGE_SUCCEEDED", "temp-id",
+                step("VERIFICATION_REQUIRED"), authenticator("EMAIL_OTP", "Alice@Example.com", null)));
 
         ExecutorResponse response = executor.execute(context);
 
         assertEquals(response.getResult(), "COMPLETE");
-        assertEquals(response.getUpdatedUserClaims().get(AuthsignalConstants.AUTHSIGNAL_USER_ID_CLAIM), generated);
-        assertNull(context.getProperty(Executor.CONTEXT_PROP_STATE), "Challenge must be consumed");
-        assertEquals(context.getProperty(Executor.CONTEXT_PROP_ENROLLED), true);
+        assertEquals(context.getProperty(AuthsignalExecutor.CONTEXT_PROP_CHALLENGE_ID), "challenge-1");
+        assertNull(context.getProperty(AuthsignalExecutor.CONTEXT_PROP_STATE), "Flow must be consumed");
+        assertNull(context.getProperty(AuthsignalExecutor.CONTEXT_PROP_PENDING_CHALLENGE_ID));
+        assertEquals(context.getProperty(AuthsignalExecutor.CONTEXT_PROP_PASSKEY_ENROLLED), Boolean.FALSE);
+        assertNull(savedClaims, "The user does not exist yet");
     }
 
     @Test
-    public void testRetriedRegistrationReusesGeneratedUserId() throws Exception {
+    public void testRegistrationCallbackKeepsPasskeyEnrolledInFlow() throws Exception {
 
-        FlowExecutionContext context = registrationContext();
-        when(client.trackAction(anyString(), anyString(), any())).thenReturn(track("ALLOW", null));
+        FlowExecutionContext context = registrationContext(EMAIL, MOBILE);
+        when(client.startFlow(any())).thenReturn(started());
+        ExecutorResponse redirect = executor.execute(context);
+        callback(context, redirect);
+        when(client.verifyFlow("sign-up", "tok")).thenReturn(verified("CHALLENGE_SUCCEEDED", "temp-id",
+                step("VERIFICATION_REQUIRED"), step("ENROLLMENT_REQUIRED", "PASSKEY"),
+                authenticator("EMAIL_OTP", EMAIL, null)));
 
-        ExecutorResponse first = executor.execute(context);
-        ExecutorResponse second = executor.execute(context);
-
-        Object firstId = first.getUpdatedUserClaims().get(AuthsignalConstants.AUTHSIGNAL_USER_ID_CLAIM);
-        assertNotNull(firstId);
-        assertEquals(second.getUpdatedUserClaims().get(AuthsignalConstants.AUTHSIGNAL_USER_ID_CLAIM), firstId);
+        assertEquals(executor.execute(context).getResult(), "COMPLETE");
+        assertEquals(context.getProperty(AuthsignalExecutor.CONTEXT_PROP_PASSKEY_ENROLLED), Boolean.TRUE);
+        assertNull(savedClaims);
     }
 
     @Test
-    public void testRegistrationFailsWithoutClaim() throws Exception {
+    public void testRegistrationCallbackWithAnotherVerifiedEmailFails() throws Exception {
 
-        claimConfigured = false;
+        FlowExecutionContext context = registrationContext(EMAIL, MOBILE);
+        when(client.startFlow(any())).thenReturn(started());
+        ExecutorResponse redirect = executor.execute(context);
+        callback(context, redirect);
+        when(client.verifyFlow("sign-up", "tok")).thenReturn(verified("CHALLENGE_SUCCEEDED", "temp-id",
+                step("VERIFICATION_REQUIRED"), authenticator("EMAIL_OTP", "mallory@example.com", null)));
 
-        ExecutorResponse response = executor.execute(registrationContext());
+        ExecutorResponse response = executor.execute(context);
 
-        assertEquals(response.getResult(), "ERROR");
-        assertEquals(response.getErrorCode(), "AUTHSIGNAL-60018");
-        verify(client, never()).trackAction(anyString(), anyString(), any());
+        assertEquals(response.getResult(), "USER_ERROR");
+        assertEquals(response.getErrorCode(),
+                AuthsignalConstants.ErrorMessages.ERROR_CODE_CHALLENGE_MISMATCH.getCode());
+        assertNull(context.getProperty(AuthsignalExecutor.CONTEXT_PROP_CHALLENGE_ID));
+    }
+
+    @Test
+    public void testPhoneRegistrationCallbackBindsToVerifiedPhone() throws Exception {
+
+        FlowExecutionContext context = registrationContext(null, MOBILE);
+        when(client.startFlow(any())).thenReturn(started());
+        ExecutorResponse redirect = executor.execute(context);
+        callback(context, redirect);
+        when(client.verifyFlow("sign-up", "tok")).thenReturn(verified("CHALLENGE_SUCCEEDED", "temp-id",
+                step("VERIFICATION_REQUIRED"), authenticator("SMS", null, MOBILE)));
+
+        assertEquals(executor.execute(context).getResult(), "COMPLETE");
+    }
+
+    @Test
+    public void testFailedFlowFails() throws Exception {
+
+        FlowExecutionContext context = registrationContext(EMAIL, MOBILE);
+        when(client.startFlow(any())).thenReturn(started());
+        ExecutorResponse redirect = executor.execute(context);
+        callback(context, redirect);
+        when(client.verifyFlow("sign-up", "tok")).thenReturn(verified("CHALLENGE_FAILED", "temp-id",
+                step("VERIFICATION_REQUIRED"), authenticator("EMAIL_OTP", EMAIL, null)));
+
+        ExecutorResponse response = executor.execute(context);
+
+        assertEquals(response.getResult(), "USER_ERROR");
+        assertEquals(response.getErrorCode(),
+                AuthsignalConstants.ErrorMessages.ERROR_CODE_CHALLENGE_NOT_SUCCEEDED.getCode());
     }
 
     @Test
     public void testCallbackWithWrongStateFails() throws Exception {
 
-        FlowExecutionContext context = registrationContext();
-        challengeRequired(true);
+        FlowExecutionContext context = registrationContext(EMAIL, MOBILE);
+        when(client.startFlow(any())).thenReturn(started());
         executor.execute(context);
-        String code = (String) context.getProperty(Executor.CONTEXT_PROP_CODE);
-
-        callback(context, code, "forged-state");
-        ExecutorResponse response = executor.execute(context);
-
-        assertEquals(response.getResult(), "USER_ERROR");
-        assertEquals(response.getErrorCode(), "AUTHSIGNAL-60023");
-        verify(client, never()).getAction(anyString(), anyString(), anyString());
-    }
-
-    @Test
-    public void testCallbackCannotBeReplayed() throws Exception {
-
-        FlowExecutionContext context = registrationContext();
-        challengeRequired(true);
-        ExecutorResponse redirect = executor.execute(context);
-        String generated = (String) context.getProperty(Executor.CONTEXT_PROP_GENERATED_USER_ID);
-        String code = (String) context.getProperty(Executor.CONTEXT_PROP_CODE);
-        when(client.getAction(generated, "signUp", "idem-1")).thenReturn(action("CHALLENGE_SUCCEEDED"));
-        callback(context, code, redirect.getAdditionalInfo().get("state"));
-        assertEquals(executor.execute(context).getResult(), "COMPLETE");
-
-        // With no pending challenge the same inputs start a new track, never a second completion from the result.
-        when(client.trackAction(anyString(), anyString(), any())).thenReturn(track("BLOCK", null));
-        assertEquals(executor.execute(context).getResult(), "USER_ERROR");
-    }
-
-    @Test
-    public void testChallengeNotSucceededFails() throws Exception {
-
-        FlowExecutionContext context = registrationContext();
-        challengeRequired(true);
-        ExecutorResponse redirect = executor.execute(context);
-        String generated = (String) context.getProperty(Executor.CONTEXT_PROP_GENERATED_USER_ID);
-        when(client.getAction(generated, "signUp", "idem-1")).thenReturn(action("CHALLENGE_REQUIRED"));
-        callback(context, (String) context.getProperty(Executor.CONTEXT_PROP_CODE),
-                redirect.getAdditionalInfo().get("state"));
+        context.addUserInputData("code", (String) context.getProperty(AuthsignalExecutor.CONTEXT_PROP_CODE));
+        context.addUserInputData("state", "forged-state");
+        context.addUserInputData("challenge_token", "tok");
 
         ExecutorResponse response = executor.execute(context);
 
         assertEquals(response.getResult(), "USER_ERROR");
-        assertEquals(response.getErrorCode(), "AUTHSIGNAL-60010");
-        assertNull(context.getProperty(Executor.CONTEXT_PROP_ENROLLED));
+        assertEquals(response.getErrorCode(), AuthsignalConstants.ErrorMessages.ERROR_CODE_INVALID_CALLBACK.getCode());
+        assertNull(context.getProperty(AuthsignalExecutor.CONTEXT_PROP_STATE), "A forged callback consumes the flow");
+        verify(client, never()).verifyFlow(anyString(), anyString());
     }
 
     @Test
-    public void testRecoveryUsesUserUuidAndRecoveryAction() throws Exception {
+    public void testCallbackWithoutChallengeTokenFails() throws Exception {
 
-        challengeRequired(true);
+        FlowExecutionContext context = registrationContext(EMAIL, MOBILE);
+        when(client.startFlow(any())).thenReturn(started());
+        ExecutorResponse redirect = executor.execute(context);
+        context.addUserInputData("code", (String) context.getProperty(AuthsignalExecutor.CONTEXT_PROP_CODE));
+        context.addUserInputData("state", redirect.getAdditionalInfo().get("state"));
+
+        ExecutorResponse response = executor.execute(context);
+
+        assertEquals(response.getResult(), "USER_ERROR");
+        assertEquals(response.getErrorCode(), AuthsignalConstants.ErrorMessages.ERROR_CODE_MISSING_TOKEN.getCode());
+        verify(client, never()).verifyFlow(anyString(), anyString());
+    }
+
+    @Test
+    public void testRecoveryStartsFlowWithUserId() throws Exception {
+
+        when(client.startFlow(any())).thenReturn(started());
 
         ExecutorResponse response = executor.execute(recoveryContext());
 
         assertEquals(response.getResult(), "EXTERNAL_REDIRECTION");
-        ArgumentCaptor<TrackActionRequest> request = ArgumentCaptor.forClass(TrackActionRequest.class);
-        verify(client).trackAction(eq(USER_UUID), eq("passwordRecovery"), request.capture());
-        assertNull(request.getValue().getEmail(), "Contact details must not be sent in recovery");
+        StartFlowRequest request = captureStartRequest();
+        assertEquals(request.getActionCode(), "password-reset");
+        assertEquals(request.getUserId(), USER_UUID);
+        assertNull(request.getUserEmail());
+        assertNull(request.getHintEmail());
     }
 
     @Test
-    public void testRecoveryUsesMappedUserId() throws Exception {
+    public void testRecoveryUsesUserStoreLookupWhenUserIdMissing() throws Exception {
 
-        mappedUserId = "as-generated-at-signup";
-        when(client.trackAction(anyString(), anyString(), any())).thenReturn(track("ALLOW", null));
+        FlowExecutionContext context = recoveryContext();
+        context.getFlowUser().setUserId(null);
+        storeUserId = "looked-up-id";
+        when(client.startFlow(any())).thenReturn(started());
 
-        ExecutorResponse response = executor.execute(recoveryContext());
+        executor.execute(context);
 
-        assertEquals(response.getResult(), "COMPLETE");
-        assertNull(response.getUpdatedUserClaims(), "Existing users must not get a new mapping");
-        verify(client).trackAction(eq("as-generated-at-signup"), eq("passwordRecovery"), any());
+        assertEquals(captureStartRequest().getUserId(), "looked-up-id");
     }
 
     @Test
-    public void testRecoveryRejectsUnenrolledUser() throws Exception {
+    public void testRecoveryForUnknownUserFails() throws Exception {
 
-        challengeRequired(false);
-
-        ExecutorResponse response = executor.execute(recoveryContext());
-
-        assertEquals(response.getResult(), "USER_ERROR");
-        assertEquals(response.getErrorCode(), "AUTHSIGNAL-60022");
-    }
-
-    @Test
-    public void testRecoveryUnknownUserFailsGenerically() throws Exception {
-
+        FlowExecutionContext context = recoveryContext();
+        context.getFlowUser().setUserId(null);
         storeUserId = null;
 
-        ExecutorResponse response = executor.execute(recoveryContext());
+        ExecutorResponse response = executor.execute(context);
 
         assertEquals(response.getResult(), "USER_ERROR");
-        assertEquals(response.getErrorCode(), "AUTHSIGNAL-60021");
-        verify(client, never()).trackAction(anyString(), anyString(), any());
+        assertEquals(response.getErrorCode(),
+                AuthsignalConstants.ErrorMessages.ERROR_CODE_USER_NOT_IDENTIFIED.getCode());
+        verify(client, never()).startFlow(any());
     }
 
     @Test
-    public void testBlockFails() throws Exception {
+    public void testRecoveryUsernameIdentifier() throws Exception {
 
-        when(client.trackAction(anyString(), anyString(), any())).thenReturn(track("BLOCK", null));
+        tenantProperties.put(AuthsignalConnectorConfig.USER_IDENTIFIER, "username");
+        when(client.startFlow(any())).thenReturn(started());
 
-        ExecutorResponse response = executor.execute(registrationContext());
+        executor.execute(recoveryContext());
+
+        assertEquals(captureStartRequest().getUserId(), "alice");
+    }
+
+    @Test
+    public void testRecoveryCallbackCompletes() throws Exception {
+
+        FlowExecutionContext context = recoveryContext();
+        when(client.startFlow(any())).thenReturn(started());
+        ExecutorResponse redirect = executor.execute(context);
+        callback(context, redirect);
+        when(client.verifyFlow("password-reset", "tok")).thenReturn(verified("CHALLENGE_SUCCEEDED", USER_UUID,
+                step("VERIFICATION_REQUIRED")));
+
+        ExecutorResponse response = executor.execute(context);
+
+        assertEquals(response.getResult(), "COMPLETE");
+        assertNull(context.getProperty(AuthsignalExecutor.CONTEXT_PROP_CHALLENGE_ID));
+    }
+
+    @Test
+    public void testRecoveryCallbackForAnotherUserFails() throws Exception {
+
+        FlowExecutionContext context = recoveryContext();
+        when(client.startFlow(any())).thenReturn(started());
+        ExecutorResponse redirect = executor.execute(context);
+        callback(context, redirect);
+        when(client.verifyFlow("password-reset", "tok")).thenReturn(verified("CHALLENGE_SUCCEEDED", "someone",
+                step("VERIFICATION_REQUIRED")));
+
+        ExecutorResponse response = executor.execute(context);
+
+        assertEquals(response.getErrorCode(),
+                AuthsignalConstants.ErrorMessages.ERROR_CODE_CHALLENGE_MISMATCH.getCode());
+    }
+
+    @Test
+    public void testRecoveryWithEnrolmentFails() throws Exception {
+
+        // Whoever started the recovery must not pass it by enrolling their own authenticator.
+        FlowExecutionContext context = recoveryContext();
+        when(client.startFlow(any())).thenReturn(started());
+        ExecutorResponse redirect = executor.execute(context);
+        callback(context, redirect);
+        when(client.verifyFlow("password-reset", "tok")).thenReturn(verified("CHALLENGE_SUCCEEDED", USER_UUID,
+                step("ENROLLMENT_REQUIRED")));
+
+        ExecutorResponse response = executor.execute(context);
 
         assertEquals(response.getResult(), "USER_ERROR");
-        assertEquals(response.getErrorCode(), "AUTHSIGNAL-60007");
+        assertEquals(response.getErrorCode(),
+                AuthsignalConstants.ErrorMessages.ERROR_CODE_USER_NOT_ENROLLED.getCode());
+    }
+
+    @Test
+    public void testRecoveryWithoutCompletedStepsFails() throws Exception {
+
+        FlowExecutionContext context = recoveryContext();
+        when(client.startFlow(any())).thenReturn(started());
+        ExecutorResponse redirect = executor.execute(context);
+        callback(context, redirect);
+        when(client.verifyFlow("password-reset", "tok")).thenReturn(verified("CHALLENGE_SUCCEEDED", USER_UUID));
+
+        assertEquals(executor.execute(context).getErrorCode(),
+                AuthsignalConstants.ErrorMessages.ERROR_CODE_USER_NOT_ENROLLED.getCode());
+    }
+
+    @Test
+    public void testInvitedUserRegistrationStartsRegistrationFlowWithUserId() throws Exception {
+
+        FlowUser flowUser = existingUser();
+        when(client.startFlow(any())).thenReturn(started());
+
+        executor.execute(context(AuthsignalExecutor.INVITED_USER_REGISTRATION, flowUser));
+
+        StartFlowRequest request = captureStartRequest();
+        assertEquals(request.getActionCode(), "sign-up");
+        assertEquals(request.getUserId(), USER_UUID);
+    }
+
+    @Test
+    public void testSelfServiceStartsSignInFlowWithUserId() throws Exception {
+
+        when(client.startFlow(any())).thenReturn(started());
+
+        ExecutorResponse response = executor.execute(selfServiceContext());
+
+        assertEquals(response.getResult(), "EXTERNAL_REDIRECTION");
+        StartFlowRequest request = captureStartRequest();
+        assertEquals(request.getActionCode(), "sign-in");
+        assertEquals(request.getUserId(), USER_UUID);
+        assertNull(request.getUserEmail());
+    }
+
+    @Test
+    public void testConfiguredSignInFlowRefUsedForSelfService() throws Exception {
+
+        tenantProperties.put(AuthsignalConnectorConfig.SIGN_IN_FLOW_REF, "custom-sign-in");
+        when(client.startFlow(any())).thenReturn(started());
+
+        executor.execute(selfServiceContext());
+
+        assertEquals(captureStartRequest().getActionCode(), "custom-sign-in");
+    }
+
+    @Test
+    public void testSelfServiceCallbackCompletes() throws Exception {
+
+        FlowExecutionContext context = selfServiceContext();
+        when(client.startFlow(any())).thenReturn(started());
+        ExecutorResponse redirect = executor.execute(context);
+        callback(context, redirect);
+        when(client.verifyFlow("sign-in", "tok")).thenReturn(verified("CHALLENGE_SUCCEEDED", USER_UUID,
+                step("VERIFICATION_REQUIRED")));
+
+        ExecutorResponse response = executor.execute(context);
+
+        assertEquals(response.getResult(), "COMPLETE");
+        assertNull(context.getProperty(AuthsignalExecutor.CONTEXT_PROP_STATE), "Flow must be consumed");
+        assertNull(context.getProperty(AuthsignalExecutor.CONTEXT_PROP_CHALLENGE_ID));
+        assertEquals(savedClaimsUser, "alice");
+        assertEquals(savedClaims, Collections.singletonMap(AuthsignalConstants.PASSKEY_ENROLLED_CLAIM, "false"));
+    }
+
+    @Test
+    public void testSelfServiceCallbackSavesPasskeyEnrolledWhenUserHasPasskey() throws Exception {
+
+        FlowExecutionContext context = selfServiceContext();
+        when(client.startFlow(any())).thenReturn(started());
+        ExecutorResponse redirect = executor.execute(context);
+        callback(context, redirect);
+        when(client.verifyFlow("sign-in", "tok")).thenReturn(verified("CHALLENGE_SUCCEEDED", USER_UUID,
+                step("VERIFICATION_REQUIRED"), authenticator("PASSKEY", null, null)));
+
+        assertEquals(executor.execute(context).getResult(), "COMPLETE");
+        assertEquals(savedClaims, Collections.singletonMap(AuthsignalConstants.PASSKEY_ENROLLED_CLAIM, "true"));
+    }
+
+    @Test
+    public void testSelfServiceCallbackSavesPasskeyEnrolledWhenVerifiedWithPasskey() throws Exception {
+
+        FlowExecutionContext context = selfServiceContext();
+        when(client.startFlow(any())).thenReturn(started());
+        ExecutorResponse redirect = executor.execute(context);
+        callback(context, redirect);
+        when(client.verifyFlow("sign-in", "tok")).thenReturn(verified("CHALLENGE_SUCCEEDED", USER_UUID,
+                step("VERIFICATION_REQUIRED", "PASSKEY")));
+
+        assertEquals(executor.execute(context).getResult(), "COMPLETE");
+        assertEquals(savedClaims, Collections.singletonMap(AuthsignalConstants.PASSKEY_ENROLLED_CLAIM, "true"));
+    }
+
+    @Test
+    public void testFailureToSavePasskeyEnrolledDoesNotFailFlow() throws Exception {
+
+        executor = new TestableExecutor() {
+            @Override
+            protected void setUserClaims(String tenantDomain, String domainQualifiedUsername,
+                                         Map<String, String> claims) throws UserStoreException {
+
+                throw new UserStoreException("Claim not found");
+            }
+        };
+        FlowExecutionContext context = selfServiceContext();
+        when(client.startFlow(any())).thenReturn(started());
+        ExecutorResponse redirect = executor.execute(context);
+        callback(context, redirect);
+        when(client.verifyFlow("sign-in", "tok")).thenReturn(verified("CHALLENGE_SUCCEEDED", USER_UUID,
+                step("VERIFICATION_REQUIRED", "PASSKEY")));
+
+        assertEquals(executor.execute(context).getResult(), "COMPLETE");
+    }
+
+    @Test
+    public void testSelfServiceCallbackForAnotherUserFails() throws Exception {
+
+        FlowExecutionContext context = selfServiceContext();
+        when(client.startFlow(any())).thenReturn(started());
+        ExecutorResponse redirect = executor.execute(context);
+        callback(context, redirect);
+        when(client.verifyFlow("sign-in", "tok")).thenReturn(verified("CHALLENGE_SUCCEEDED", "someone",
+                step("VERIFICATION_REQUIRED")));
+
+        assertEquals(executor.execute(context).getErrorCode(),
+                AuthsignalConstants.ErrorMessages.ERROR_CODE_CHALLENGE_MISMATCH.getCode());
+    }
+
+    @Test
+    public void testSelfServiceWithEnrolmentFails() throws Exception {
+
+        // Whoever holds the user's session must not pass the verification by enrolling their own authenticator.
+        FlowExecutionContext context = selfServiceContext();
+        when(client.startFlow(any())).thenReturn(started());
+        ExecutorResponse redirect = executor.execute(context);
+        callback(context, redirect);
+        when(client.verifyFlow("sign-in", "tok")).thenReturn(verified("CHALLENGE_SUCCEEDED", USER_UUID,
+                step("VERIFICATION_REQUIRED"), step("ENROLLMENT_OPTIONAL")));
+
+        ExecutorResponse response = executor.execute(context);
+
+        assertEquals(response.getResult(), "USER_ERROR");
+        assertEquals(response.getErrorCode(),
+                AuthsignalConstants.ErrorMessages.ERROR_CODE_USER_NOT_ENROLLED.getCode());
+    }
+
+    @Test
+    public void testSelfServiceForUnknownUserFails() throws Exception {
+
+        FlowExecutionContext context = selfServiceContext();
+        context.getFlowUser().setUserId(null);
+        storeUserId = null;
+
+        ExecutorResponse response = executor.execute(context);
+
+        assertEquals(response.getResult(), "USER_ERROR");
+        assertEquals(response.getErrorCode(),
+                AuthsignalConstants.ErrorMessages.ERROR_CODE_USER_NOT_IDENTIFIED.getCode());
+        verify(client, never()).startFlow(any());
+    }
+
+    @Test
+    public void testMissingSecretFails() throws Exception {
+
+        tenantProperties.remove(AuthsignalConnectorConfig.SECRET_KEY);
+
+        ExecutorResponse response = executor.execute(registrationContext(EMAIL, MOBILE));
+
+        assertEquals(response.getResult(), "ERROR");
+        assertEquals(response.getErrorCode(),
+                AuthsignalConstants.ErrorMessages.ERROR_CODE_SECRET_KEY_NOT_CONFIGURED.getCode());
     }
 
     @Test
     public void testMissingPortalUrlFails() throws Exception {
 
-        FlowExecutionContext context = registrationContext();
+        FlowExecutionContext context = registrationContext(EMAIL, MOBILE);
         context.setPortalUrl(null);
 
-        assertEquals(executor.execute(context).getErrorCode(), "AUTHSIGNAL-60020");
+        assertEquals(executor.execute(context).getErrorCode(),
+                AuthsignalConstants.ErrorMessages.ERROR_CODE_PORTAL_URL_NOT_FOUND.getCode());
     }
 
     @Test
-    public void testRollbackDeletesEnrolledGeneratedUser() throws Exception {
+    public void testUnsupportedFlowTypeFails() throws Exception {
 
-        FlowExecutionContext context = registrationContext();
-        context.setProperty(Executor.CONTEXT_PROP_GENERATED_USER_ID, "gen-1");
-        context.setProperty(Executor.CONTEXT_PROP_ENROLLED, true);
+        ExecutorResponse response = executor.execute(context("ASK_PASSWORD", existingUser()));
 
-        executor.rollback(context);
-
-        verify(client).deleteUser("gen-1");
-        assertNull(context.getProperty(Executor.CONTEXT_PROP_GENERATED_USER_ID));
+        assertEquals(response.getErrorCode(),
+                AuthsignalConstants.ErrorMessages.ERROR_CODE_UNSUPPORTED_FLOW_TYPE.getCode());
     }
 
     @Test
-    public void testRollbackIgnoresDeleteFailureAndUnenrolledUser() throws Exception {
+    public void testStartFlowFailure() throws Exception {
 
-        FlowExecutionContext context = registrationContext();
-        context.setProperty(Executor.CONTEXT_PROP_GENERATED_USER_ID, "gen-1");
-        executor.rollback(context);
-        verify(client, never()).deleteUser(anyString());
+        when(client.startFlow(any())).thenThrow(new AuthsignalClientException("down", 500));
 
-        context.setProperty(Executor.CONTEXT_PROP_GENERATED_USER_ID, "gen-2");
-        context.setProperty(Executor.CONTEXT_PROP_ENROLLED, true);
-        doThrow(new AuthsignalClientException("down")).when(client).deleteUser("gen-2");
+        ExecutorResponse response = executor.execute(registrationContext(EMAIL, MOBILE));
+
+        assertEquals(response.getResult(), "ERROR");
+        assertEquals(response.getErrorCode(),
+                AuthsignalConstants.ErrorMessages.ERROR_CODE_START_FLOW_FAILED.getCode());
+    }
+
+    @Test
+    public void testRollbackClearsFlowState() throws Exception {
+
+        FlowExecutionContext context = registrationContext(EMAIL, MOBILE);
+        when(client.startFlow(any())).thenReturn(started());
+        executor.execute(context);
+        context.setProperty(AuthsignalExecutor.CONTEXT_PROP_CHALLENGE_ID, "challenge-1");
+
         executor.rollback(context);
-        assertFalse(context.getProperties().containsKey(Executor.CONTEXT_PROP_ENROLLED));
+
+        assertNull(context.getProperty(AuthsignalExecutor.CONTEXT_PROP_STATE));
+        assertNull(context.getProperty(AuthsignalExecutor.CONTEXT_PROP_PENDING_CHALLENGE_ID));
+        assertNull(context.getProperty(AuthsignalExecutor.CONTEXT_PROP_CHALLENGE_ID));
     }
 
     @Test
     public void testBuildRedirectUrl() {
 
-        assertEquals(AuthsignalExecutor.buildRedirectUrl("https://is/accounts/register", "c", "s"),
-                "https://is/accounts/register?code=c&state=s");
-        assertEquals(AuthsignalExecutor.buildRedirectUrl("https://is/accounts/register?a=1#frag", "c", "s"),
-                "https://is/accounts/register?a=1&code=c&state=s");
+        assertEquals(AuthsignalExecutor.buildRedirectUrl("https://p/register", "c", "s"),
+                "https://p/register?code=c&state=s");
+        assertEquals(AuthsignalExecutor.buildRedirectUrl("https://p/register?a=b#frag", "c", "s"),
+                "https://p/register?a=b&code=c&state=s");
     }
 
-    private FlowExecutionContext registrationContext() {
+    private StartFlowRequest captureStartRequest() throws Exception {
+
+        ArgumentCaptor<StartFlowRequest> captor = ArgumentCaptor.forClass(StartFlowRequest.class);
+        verify(client).startFlow(captor.capture());
+        return captor.getValue();
+    }
+
+    private FlowExecutionContext registrationContext(String email, String mobile) {
 
         FlowUser flowUser = new FlowUser();
-        flowUser.addClaim(AuthsignalConstants.EMAIL_CLAIM, "alice@example.com");
-        flowUser.addClaim(AuthsignalConstants.MOBILE_CLAIM, "+94770000000");
-        return context(Executor.REGISTRATION, flowUser);
+        if (email != null) {
+            flowUser.addClaim(AuthsignalConstants.EMAIL_CLAIM, email);
+        }
+        if (mobile != null) {
+            flowUser.addClaim(AuthsignalConstants.MOBILE_CLAIM, mobile);
+        }
+        return context(AuthsignalExecutor.REGISTRATION, flowUser);
     }
 
     private FlowExecutionContext recoveryContext() {
 
+        return context(AuthsignalExecutor.PASSWORD_RECOVERY, existingUser());
+    }
+
+    private FlowExecutionContext selfServiceContext() {
+
+        return context(AuthsignalExecutor.SECURED_SELF_SERVICE_OPERATIONS, existingUser());
+    }
+
+    private static FlowUser existingUser() {
+
         FlowUser flowUser = new FlowUser();
         flowUser.setUsername("alice");
         flowUser.setUserStoreDomain("PRIMARY");
-        flowUser.addClaim(AuthsignalConstants.EMAIL_CLAIM, "alice@example.com");
-        return context(Executor.PASSWORD_RECOVERY, flowUser);
+        flowUser.setUserId(USER_UUID);
+        flowUser.addClaim(AuthsignalConstants.EMAIL_CLAIM, EMAIL);
+        return flowUser;
     }
 
-    private FlowExecutionContext context(String flowType, FlowUser flowUser) {
+    private static FlowExecutionContext context(String flowType, FlowUser flowUser) {
 
         FlowExecutionContext context = new FlowExecutionContext();
         context.setFlowType(flowType);
         context.setTenantDomain(TENANT);
         context.setPortalUrl(PORTAL_URL);
         context.setFlowUser(flowUser);
-        context.setProperties(new HashMap<>());
-        context.setUserInputData(new HashMap<>());
         return context;
     }
 
-    private void callback(FlowExecutionContext context, String code, String state) {
+    /**
+     * Simulate the portal resuming the flow with the code and state from the redirect URL and the challenge token
+     * Authsignal appended to it.
+     */
+    private static void callback(FlowExecutionContext context, ExecutorResponse redirect) {
 
-        context.addUserInputData("code", code);
-        context.addUserInputData("state", state);
+        context.addUserInputData("code", (String) context.getProperty(AuthsignalExecutor.CONTEXT_PROP_CODE));
+        context.addUserInputData("state", redirect.getAdditionalInfo().get("state"));
+        context.addUserInputData("challenge_token", "tok");
     }
 
-    private void challengeRequired(boolean enrolled) throws AuthsignalClientException {
+    private static FlowResponse started() {
 
-        TrackActionResponse trackResponse = track("CHALLENGE_REQUIRED", CHALLENGE_URL);
-        trackResponse.setIsEnrolled(enrolled);
-        when(client.trackAction(anyString(), anyString(), any())).thenReturn(trackResponse);
-    }
-
-    private static TrackActionResponse track(String state, String url) {
-
-        TrackActionResponse response = new TrackActionResponse();
-        response.setState(state);
-        response.setUrl(url);
-        response.setIdempotencyKey("idem-1");
+        FlowResponse response = new FlowResponse();
+        response.setChallengeUrl(CHALLENGE_URL);
+        response.setChallengeId("challenge-1");
+        response.setChallengeToken("start-token");
         return response;
     }
 
-    private static GetActionResponse action(String state) {
+    private static FlowResponse.Step step(String stepType) {
 
-        GetActionResponse response = new GetActionResponse();
-        response.setState(state);
-        response.setVerificationMethod("PASSKEY");
+        return step(stepType, "EMAIL_OTP");
+    }
+
+    private static FlowResponse.Step step(String stepType, String verificationMethod) {
+
+        FlowResponse.Step step = new FlowResponse.Step();
+        step.setStepType(stepType);
+        step.setVerificationMethod(verificationMethod);
+        return step;
+    }
+
+    private static FlowResponse.Authenticator authenticator(String method, String email, String phoneNumber) {
+
+        FlowResponse.Authenticator authenticator = new FlowResponse.Authenticator();
+        authenticator.setVerificationMethod(method);
+        authenticator.setEmail(email);
+        authenticator.setPhoneNumber(phoneNumber);
+        return authenticator;
+    }
+
+    private static FlowResponse verified(String state, String userId, Object... stepsAndAuthenticators) {
+
+        List<FlowResponse.Step> steps = new ArrayList<>();
+        List<FlowResponse.Authenticator> authenticators = new ArrayList<>();
+        for (Object item : stepsAndAuthenticators) {
+            if (item instanceof FlowResponse.Step) {
+                steps.add((FlowResponse.Step) item);
+            } else {
+                authenticators.add((FlowResponse.Authenticator) item);
+            }
+        }
+        FlowResponse.Action action = new FlowResponse.Action();
+        action.setState(state);
+        action.setCompletedSteps(steps);
+        FlowResponse.User user = new FlowResponse.User();
+        user.setUserId(userId);
+        user.setAuthenticators(authenticators);
+        FlowResponse response = new FlowResponse();
+        response.setAction(action);
+        response.setUser(user);
         return response;
     }
 
@@ -420,22 +794,20 @@ public class AuthsignalExecutorTest {
         }
 
         @Override
-        protected boolean isUserIdClaimConfigured(String tenantDomain) {
-
-            return claimConfigured;
-        }
-
-        @Override
-        protected String getMappedUserId(String tenantDomain, String userStoreDomain, String username)
-                throws UserStoreException {
-
-            return mappedUserId;
-        }
-
-        @Override
         protected String getUserId(String tenantDomain, String userStoreDomain, String username) {
 
             return storeUserId;
+        }
+
+        @Override
+        protected void setUserClaims(String tenantDomain, String domainQualifiedUsername, Map<String, String> claims)
+                throws UserStoreException {
+
+            savedClaimsUser = domainQualifiedUsername;
+            savedClaims = claims;
+            // Like the SCIM user operation listener, which adds the last modified time to the claims.
+            claims.put("probe", "probe");
+            claims.remove("probe");
         }
     }
 }

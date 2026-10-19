@@ -19,7 +19,6 @@
 package org.wso2.carbon.identity.local.auth.authsignal.connector;
 
 import org.testng.annotations.Test;
-import org.wso2.carbon.identity.local.auth.authsignal.constant.AuthsignalConstants.ConnectorConfig;
 
 import java.util.Arrays;
 import java.util.Collections;
@@ -45,15 +44,19 @@ public class AuthsignalConnectorConfigTest {
             assertTrue(defaults.containsKey(name), "Missing default: " + name);
         }
         assertEquals(defaults.size(), connector.getPropertyNames().length);
-        assertEquals(defaults.getProperty(ConnectorConfig.REGION), "us");
-        assertEquals(defaults.getProperty(ConnectorConfig.SECRET_KEY), "");
+        assertEquals(defaults.getProperty(AuthsignalConnectorConfig.REGION), "us");
+        assertEquals(defaults.getProperty(AuthsignalConnectorConfig.SECRET_KEY), "");
+        assertEquals(defaults.getProperty(AuthsignalConnectorConfig.SIGN_IN_FLOW_REF), "sign-in");
+        assertEquals(defaults.getProperty(AuthsignalConnectorConfig.REGISTRATION_FLOW_REF), "sign-up");
+        assertEquals(defaults.getProperty(AuthsignalConnectorConfig.RECOVERY_FLOW_REF), "password-reset");
+        assertEquals(AuthsignalConnectorConfig.RECOVERY_FLOW_REF, "Authsignal.RecoveryFlowRef");
     }
 
     @Test
     public void testSecretKeyIsConfidential() {
 
         assertEquals(connector.getConfidentialPropertyValues("carbon.super"),
-                Collections.singletonList(ConnectorConfig.SECRET_KEY));
-        assertTrue(Arrays.asList(connector.getPropertyNames()).contains(ConnectorConfig.SECRET_KEY));
+                Collections.singletonList(AuthsignalConnectorConfig.SECRET_KEY));
+        assertTrue(Arrays.asList(connector.getPropertyNames()).contains(AuthsignalConnectorConfig.SECRET_KEY));
     }
 }

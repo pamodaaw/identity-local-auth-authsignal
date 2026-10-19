@@ -22,6 +22,7 @@ import org.wso2.carbon.identity.core.util.IdentityTenantUtil;
 import org.wso2.carbon.identity.core.util.IdentityUtil;
 import org.wso2.carbon.identity.local.auth.authsignal.constant.AuthsignalConstants;
 import org.wso2.carbon.identity.local.auth.authsignal.internal.AuthsignalAuthenticatorDataHolder;
+import org.wso2.carbon.identity.local.auth.authsignal.model.AuthsignalConfig;
 import org.wso2.carbon.user.api.UserRealm;
 import org.wso2.carbon.user.api.UserStoreException;
 import org.wso2.carbon.user.api.UserStoreManager;
@@ -29,57 +30,15 @@ import org.wso2.carbon.user.core.UserCoreConstants;
 import org.wso2.carbon.user.core.common.AbstractUserStoreManager;
 import org.wso2.carbon.utils.multitenancy.MultitenantConstants;
 
-import java.util.Map;
-
 /**
- * Resolves how a local WSO2 user maps to an Authsignal user ID. Shared by the authenticator and the flow executor
- * so that a user enrolled in one flow is recognised in every other flow.
- * <p>
- * The {@link AuthsignalConstants#AUTHSIGNAL_USER_ID_CLAIM} claim always takes precedence. It is set when the user
- * enrolled during self registration, before the WSO2 user UUID existed. Without it, the configured
- * {@link AuthsignalConstants.UserIdentifier} strategy applies.
+ * Resolves how a local WSO2 user maps to an Authsignal user ID, using the configured
+ * {@link AuthsignalConstants.UserIdentifier} strategy. Shared by the authenticator, the flow executor and the
+ * listeners so that a user is known by the same ID in every flow.
  */
 public final class AuthsignalUserIdResolver {
 
     private AuthsignalUserIdResolver() {
 
-    }
-
-    /**
-     * Check whether the Authsignal user ID claim exists in the local claim dialect of the tenant.
-     *
-     * @param tenantDomain Tenant domain.
-     * @return True if the claim is configured.
-     * @throws UserStoreException If the claim configuration cannot be read.
-     */
-    public static boolean isUserIdClaimConfigured(String tenantDomain) throws UserStoreException {
-
-        UserRealm userRealm = getUserRealm(tenantDomain);
-        return userRealm.getClaimManager().getClaim(AuthsignalConstants.AUTHSIGNAL_USER_ID_CLAIM) != null;
-    }
-
-    /**
-     * Get the Authsignal user ID stored on the user.
-     *
-     * @param tenantDomain    Tenant domain of the user.
-     * @param userStoreDomain User store domain of the user.
-     * @param username        Username without the user store domain.
-     * @return The mapped Authsignal user ID, or null if the claim is not configured or the user has no value.
-     * @throws UserStoreException If the claim cannot be read. Callers must fail rather than fall back, otherwise an
-     *                            enrolled user would look unenrolled to Authsignal and could enrol a new authenticator.
-     */
-    public static String getMappedUserId(String tenantDomain, String userStoreDomain, String username)
-            throws UserStoreException {
-
-        if (!isUserIdClaimConfigured(tenantDomain)) {
-            return null;
-        }
-        UserStoreManager userStoreManager = getUserRealm(tenantDomain).getUserStoreManager();
-        Map<String, String> claims = userStoreManager.getUserClaimValues(
-                IdentityUtil.addDomainToName(username, userStoreDomain),
-                new String[]{AuthsignalConstants.AUTHSIGNAL_USER_ID_CLAIM}, null);
-        return claims != null ? StringUtils.trimToNull(claims.get(AuthsignalConstants.AUTHSIGNAL_USER_ID_CLAIM))
-                : null;
     }
 
     /**
@@ -100,6 +59,31 @@ public final class AuthsignalUserIdResolver {
         }
         return ((AbstractUserStoreManager) userStoreManager)
                 .getUserIDFromUserName(IdentityUtil.addDomainToName(username, userStoreDomain));
+    }
+
+    /**
+     * Resolve the Authsignal user ID of a local user using the configured {@link AuthsignalConstants.UserIdentifier}
+     * strategy.
+     *
+     * @param tenantDomain    Tenant domain of the user.
+     * @param userStoreDomain User store domain of the user.
+     * @param username        Username without the user store domain.
+     * @param config          Tenant configuration.
+     * @return Authsignal user ID, or null if the user does not exist.
+     * @throws UserStoreException If the user store cannot be queried or the user identifier is not supported.
+     */
+    public static String resolveLocalUserId(String tenantDomain, String userStoreDomain, String username,
+                                            AuthsignalConfig config) throws UserStoreException {
+
+        String identifier = config.getUserIdentifier();
+        if (AuthsignalConstants.UserIdentifier.USER_ID.equalsIgnoreCase(identifier)) {
+            return getUserId(tenantDomain, userStoreDomain, username);
+        }
+        if (AuthsignalConstants.UserIdentifier.USERNAME.equalsIgnoreCase(identifier)) {
+            return toQualifiedUsername(username, userStoreDomain, tenantDomain);
+        }
+        throw new UserStoreException(String.format(
+                AuthsignalConstants.ErrorMessages.ERROR_CODE_INVALID_USER_IDENTIFIER.getMessage(), identifier));
     }
 
     /**

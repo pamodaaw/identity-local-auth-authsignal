@@ -25,10 +25,8 @@ import org.apache.commons.lang.StringUtils;
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
 import org.wso2.carbon.identity.local.auth.authsignal.exception.AuthsignalClientException;
-import org.wso2.carbon.identity.local.auth.authsignal.model.GetActionResponse;
-import org.wso2.carbon.identity.local.auth.authsignal.model.TrackActionRequest;
-import org.wso2.carbon.identity.local.auth.authsignal.model.TrackActionResponse;
-import org.wso2.carbon.identity.local.auth.authsignal.model.ValidateChallengeResponse;
+import org.wso2.carbon.identity.local.auth.authsignal.model.FlowResponse;
+import org.wso2.carbon.identity.local.auth.authsignal.model.StartFlowRequest;
 
 import java.io.IOException;
 import java.net.URI;
@@ -76,72 +74,83 @@ public class AuthsignalClient {
     }
 
     /**
-     * Track an action for a user. Authsignal evaluates its rules and returns the resulting state, along with a
-     * pre-built UI URL when a challenge is required.
+     * Start a flow. The user completes it in the pre-built UI at the returned challenge URL.
      *
-     * @param userId  Authsignal user ID.
-     * @param action  Action code.
-     * @param request Additional action attributes.
-     * @return Track action response.
+     * @param request Start flow request.
+     * @return Start flow response with the challenge URL and challenge ID.
      * @throws AuthsignalClientException If the API call fails.
      */
-    public TrackActionResponse trackAction(String userId, String action, TrackActionRequest request)
-            throws AuthsignalClientException {
+    public FlowResponse startFlow(StartFlowRequest request) throws AuthsignalClientException {
 
-        String path = "/users/" + encodePathSegment(userId) + "/actions/" + encodePathSegment(action);
-        return post(path, GSON.toJson(request), TrackActionResponse.class);
+        return post("/flows", GSON.toJson(request), FlowResponse.class);
     }
 
     /**
-     * Validate the token Authsignal appended to the redirect URL after the pre-built UI challenge.
+     * Verify the result of a flow using the token Authsignal appended to the redirect URL.
      *
-     * @param token  Token received on the redirect.
-     * @param userId Expected Authsignal user ID. Authsignal rejects the token if it belongs to another user.
-     * @param action Expected action code.
-     * @return Validate challenge response.
+     * @param actionCode     Action code the flow was started with. Authsignal rejects a mismatch.
+     * @param challengeToken Token received on the redirect, not the one returned when the flow started.
+     * @return Verify flow response.
      * @throws AuthsignalClientException If the API call fails.
      */
-    public ValidateChallengeResponse validateChallenge(String token, String userId, String action)
+    public FlowResponse verifyFlow(String actionCode, String challengeToken) throws AuthsignalClientException {
+
+        JsonObject body = new JsonObject();
+        body.addProperty("actionCode", actionCode);
+        body.addProperty("challengeToken", challengeToken);
+        return post("/flows/verify", body.toString(), FlowResponse.class);
+    }
+
+    /**
+     * Link a completed flow that was started without a user ID to the user. Everything enrolled in the flow moves to
+     * the given user ID.
+     *
+     * @param userId      Authsignal user ID of the user.
+     * @param challengeId Challenge ID returned when the flow started.
+     * @return Response holding the user's verified authenticators.
+     * @throws AuthsignalClientException If the API call fails.
+     */
+    public FlowResponse identifyUser(String userId, String challengeId) throws AuthsignalClientException {
+
+        JsonObject body = new JsonObject();
+        body.addProperty("userId", userId);
+        body.addProperty("challengeId", challengeId);
+        return post("/identify", body.toString(), FlowResponse.class);
+    }
+
+    /**
+     * Update the email address and / or phone number of a user as already verified. Authsignal moves the user's email
+     * OTP / magic link and SMS authenticators to the new values only when they are marked as verified.
+     *
+     * @param userId      Authsignal user ID.
+     * @param email       The verified email address, or null to leave it unchanged.
+     * @param phoneNumber The verified phone number in E.164 format, or null to leave it unchanged.
+     * @throws AuthsignalClientException If the API call fails.
+     */
+    public void updateVerifiedContactDetails(String userId, String email, String phoneNumber)
             throws AuthsignalClientException {
 
         JsonObject body = new JsonObject();
-        body.addProperty("token", token);
-        if (StringUtils.isNotBlank(userId)) {
-            body.addProperty("userId", userId);
+        if (email != null) {
+            body.addProperty("email", email);
+            body.addProperty("emailVerified", true);
         }
-        if (StringUtils.isNotBlank(action)) {
-            body.addProperty("action", action);
+        if (phoneNumber != null) {
+            body.addProperty("phoneNumber", phoneNumber);
+            body.addProperty("phoneNumberVerified", true);
         }
-        return post("/validate", body.toString(), ValidateChallengeResponse.class);
+        send("PATCH", "/users/" + encodePathSegment(userId), body.toString(), JsonObject.class);
     }
 
     /**
-     * Get the current state of a tracked action. Used where the redirect back from the pre-built UI cannot carry the
-     * token, so the result is read server to server using the action identifiers kept on the server.
-     *
-     * @param userId         Authsignal user ID.
-     * @param action         Action code.
-     * @param idempotencyKey Idempotency key returned when the action was tracked.
-     * @return Get action response.
-     * @throws AuthsignalClientException If the API call fails.
-     */
-    public GetActionResponse getAction(String userId, String action, String idempotencyKey)
-            throws AuthsignalClientException {
-
-        String path = "/users/" + encodePathSegment(userId) + "/actions/" + encodePathSegment(action) + "/"
-                + encodePathSegment(idempotencyKey);
-        return send("GET", path, null, GetActionResponse.class);
-    }
-
-    /**
-     * Delete a user and the user's authenticators on Authsignal.
+     * Delete a user along with their authenticators.
      *
      * @param userId Authsignal user ID.
-     * @throws AuthsignalClientException If the API call fails.
+     * @throws AuthsignalClientException If the API call fails, with status 404 if the user does not exist.
      */
     public void deleteUser(String userId) throws AuthsignalClientException {
 
-        send("DELETE", "/users/" + encodePathSegment(userId), null, JsonObject.class);
+        send("DELETE", "/users/" + encodePathSegment(userId), null, null);
     }
 
     private <T> T post(String path, String jsonBody, Class<T> responseType) throws AuthsignalClientException {
@@ -187,6 +196,10 @@ public class AuthsignalClient {
                         + status + ": " + httpResponse.body());
             }
             throw new AuthsignalClientException("Authsignal API returned HTTP " + status + ".", status);
+        }
+        if (responseType == null) {
+            // The caller does not use the response body.
+            return null;
         }
 
         try {

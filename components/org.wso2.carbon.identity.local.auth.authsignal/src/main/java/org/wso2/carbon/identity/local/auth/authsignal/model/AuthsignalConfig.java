@@ -19,7 +19,7 @@
 package org.wso2.carbon.identity.local.auth.authsignal.model;
 
 import org.apache.commons.lang.StringUtils;
-import org.wso2.carbon.identity.local.auth.authsignal.constant.AuthsignalConstants.ConnectorConfig;
+import org.wso2.carbon.identity.local.auth.authsignal.connector.AuthsignalConnectorConfig;
 import org.wso2.carbon.identity.local.auth.authsignal.constant.AuthsignalConstants.Defaults;
 import org.wso2.carbon.identity.local.auth.authsignal.constant.AuthsignalConstants.Region;
 
@@ -35,36 +35,33 @@ public class AuthsignalConfig {
 
     private final String secretKey;
     private final String region;
-    private final String actionCode;
     private final String userIdentifier;
-    private final boolean sendEmail;
-    private final boolean sendPhoneNumber;
-    private final boolean redirectToSettings;
-    private final boolean allowOnReviewRequired;
-    private final String registrationActionCode;
-    private final String recoveryActionCode;
+    private final String signInFlowRef;
+    private final String registrationFlowRef;
+    private final String recoveryFlowRef;
+    private final boolean syncContactDetails;
+    private final boolean deleteUsers;
 
     /**
-     * @param tenantProperties Governance connector properties of the tenant, keyed by {@link ConnectorConfig} names.
+     * @param tenantProperties Governance connector properties of the tenant, keyed by
+     *                         {@link AuthsignalConnectorConfig} property names.
      */
     public AuthsignalConfig(Map<String, String> tenantProperties) {
 
         Map<String, String> tenant = tenantProperties != null ? tenantProperties : Collections.emptyMap();
 
-        this.secretKey = StringUtils.trimToNull(tenant.get(ConnectorConfig.SECRET_KEY));
-        this.region = getString(tenant, ConnectorConfig.REGION, Defaults.REGION).toLowerCase(Locale.ROOT);
-        this.actionCode = getString(tenant, ConnectorConfig.ACTION_CODE, Defaults.ACTION_CODE);
-        this.userIdentifier = getString(tenant, ConnectorConfig.USER_IDENTIFIER, Defaults.USER_IDENTIFIER);
-        this.sendEmail = getBoolean(tenant, ConnectorConfig.SEND_EMAIL, Defaults.SEND_EMAIL);
-        this.sendPhoneNumber = getBoolean(tenant, ConnectorConfig.SEND_PHONE_NUMBER, Defaults.SEND_PHONE_NUMBER);
-        this.redirectToSettings = getBoolean(tenant, ConnectorConfig.REDIRECT_TO_SETTINGS,
-                Defaults.REDIRECT_TO_SETTINGS);
-        this.allowOnReviewRequired = getBoolean(tenant, ConnectorConfig.ALLOW_ON_REVIEW_REQUIRED,
-                Defaults.ALLOW_ON_REVIEW_REQUIRED);
-        this.registrationActionCode = getString(tenant, ConnectorConfig.REGISTRATION_ACTION_CODE,
-                Defaults.REGISTRATION_ACTION_CODE);
-        this.recoveryActionCode = getString(tenant, ConnectorConfig.RECOVERY_ACTION_CODE,
-                Defaults.RECOVERY_ACTION_CODE);
+        this.secretKey = StringUtils.trimToNull(tenant.get(AuthsignalConnectorConfig.SECRET_KEY));
+        this.region = getString(tenant, AuthsignalConnectorConfig.REGION, Defaults.REGION).toLowerCase(Locale.ROOT);
+        this.userIdentifier = getString(tenant, AuthsignalConnectorConfig.USER_IDENTIFIER, Defaults.USER_IDENTIFIER);
+        this.signInFlowRef = getString(tenant, AuthsignalConnectorConfig.SIGN_IN_FLOW_REF,
+                Defaults.SIGN_IN_FLOW_REF);
+        this.registrationFlowRef = getString(tenant, AuthsignalConnectorConfig.REGISTRATION_FLOW_REF,
+                Defaults.REGISTRATION_FLOW_REF);
+        this.recoveryFlowRef = getString(tenant, AuthsignalConnectorConfig.RECOVERY_FLOW_REF,
+                Defaults.RECOVERY_FLOW_REF);
+        this.syncContactDetails = getBoolean(tenant, AuthsignalConnectorConfig.SYNC_CONTACT_DETAILS,
+                Defaults.SYNC_CONTACT_DETAILS);
+        this.deleteUsers = getBoolean(tenant, AuthsignalConnectorConfig.DELETE_USERS, Defaults.DELETE_USERS);
     }
 
     public String getSecretKey() {
@@ -88,50 +85,50 @@ public class AuthsignalConfig {
         return Region.API_BASE_URLS.get(region);
     }
 
-    public String getActionCode() {
-
-        return actionCode;
-    }
-
     public String getUserIdentifier() {
 
         return userIdentifier;
     }
 
-    public boolean isSendEmail() {
+    /**
+     * @return Action code of the Authsignal flow used at sign-in.
+     */
+    public String getSignInFlowRef() {
 
-        return sendEmail;
-    }
-
-    public boolean isSendPhoneNumber() {
-
-        return sendPhoneNumber;
-    }
-
-    public boolean isRedirectToSettings() {
-
-        return redirectToSettings;
-    }
-
-    public boolean isAllowOnReviewRequired() {
-
-        return allowOnReviewRequired;
+        return signInFlowRef;
     }
 
     /**
-     * @return Action code tracked when Authsignal is used in a registration flow.
+     * @return Action code of the Authsignal flow used in registration flows.
      */
-    public String getRegistrationActionCode() {
+    public String getRegistrationFlowRef() {
 
-        return registrationActionCode;
+        return registrationFlowRef;
     }
 
     /**
-     * @return Action code tracked when Authsignal is used in a password recovery flow.
+     * @return Action code of the Authsignal flow used in password recovery flows.
      */
-    public String getRecoveryActionCode() {
+    public String getRecoveryFlowRef() {
 
-        return recoveryActionCode;
+        return recoveryFlowRef;
+    }
+
+    /**
+     * @return Whether the user's email address and mobile number are updated on Authsignal when they change and are
+     * verified in WSO2.
+     */
+    public boolean isSyncContactDetails() {
+
+        return syncContactDetails;
+    }
+
+    /**
+     * @return Whether the user and their authenticators are deleted on Authsignal when the user is deleted in WSO2.
+     */
+    public boolean isDeleteUsers() {
+
+        return deleteUsers;
     }
 
     /**

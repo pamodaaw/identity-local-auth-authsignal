@@ -30,11 +30,15 @@ import org.osgi.service.component.annotations.ReferenceCardinality;
 import org.osgi.service.component.annotations.ReferencePolicy;
 import org.wso2.carbon.identity.application.authentication.framework.ApplicationAuthenticator;
 import org.wso2.carbon.identity.flow.execution.engine.graph.Executor;
+import org.wso2.carbon.identity.flow.execution.engine.listener.FlowExecutionListener;
 import org.wso2.carbon.identity.governance.IdentityGovernanceService;
 import org.wso2.carbon.identity.governance.common.IdentityConnectorConfig;
 import org.wso2.carbon.identity.local.auth.authsignal.AuthsignalAuthenticator;
 import org.wso2.carbon.identity.local.auth.authsignal.connector.AuthsignalConnectorConfig;
 import org.wso2.carbon.identity.local.auth.authsignal.executor.AuthsignalExecutor;
+import org.wso2.carbon.identity.local.auth.authsignal.listener.AuthsignalFlowExecutionListener;
+import org.wso2.carbon.identity.local.auth.authsignal.listener.AuthsignalUserOperationEventListener;
+import org.wso2.carbon.user.core.listener.UserOperationEventListener;
 import org.wso2.carbon.user.core.service.RealmService;
 
 /**
@@ -59,6 +63,12 @@ public class AuthsignalAuthenticatorServiceComponent {
                     new AuthsignalAuthenticator(), null);
             // Makes Authsignal available in registration and password recovery flows.
             bundleContext.registerService(Executor.class.getName(), new AuthsignalExecutor(), null);
+            // Links the Authsignal user enrolled during registration to the WSO2 user once it is created.
+            bundleContext.registerService(FlowExecutionListener.class.getName(),
+                    new AuthsignalFlowExecutionListener(), null);
+            // Updates the user's verified email address and mobile number on Authsignal when they change.
+            bundleContext.registerService(UserOperationEventListener.class.getName(),
+                    new AuthsignalUserOperationEventListener(), null);
             if (LOG.isDebugEnabled()) {
                 LOG.debug("Authsignal authenticator is activated");
             }
